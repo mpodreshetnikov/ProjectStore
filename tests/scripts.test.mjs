@@ -645,7 +645,13 @@ test("core writes only via lib.mjs writeFileAtomic (atomic-regeneration contract
   // deliberately out of scope: session-start's marker write is host-side
   // plumbing, not a vault write path — do not "complete" this refactor there.
   const dir = join(REPO, "scripts");
-  for (const n of readdirSync(dir).filter((f) => f.endsWith(".mjs") && f !== "lib.mjs")) {
+  // Build-time tooling, not a vault write path: these run before a session
+  // exists, write repository and harness-config files rather than derived
+  // views (smoke-harness builds a throwaway fixture in the OS temp dir), and
+  // must not depend on a bound vault. Listed by name so the glob
+  // still covers every future script that IS a vault write path.
+  const BUILD_TIME = new Set(["build-adapters.mjs", "install-harness.mjs", "smoke-harness.mjs"]);
+  for (const n of readdirSync(dir).filter((f) => f.endsWith(".mjs") && f !== "lib.mjs" && !BUILD_TIME.has(f))) {
     const src = readFileSync(join(dir, n), "utf8");
     for (const call of ["writeFileSync", "renameSync", "appendFileSync", "createWriteStream",
                         "writeFile(", "copyFileSync", "truncateSync", "node:fs/promises"]) {
@@ -667,7 +673,7 @@ test("command prose routes derived-view applies through reconcile --write (contr
       `${file} must carry no Write-tool apply step for a derived view`);
   }
   // `codemap set` edits SOURCE frontmatter — contract 7 exempts it explicitly.
-  assert.match(readFileSync(join(REPO, "commands", "codemap.md"), "utf8"), /Edit the frontmatter/);
+  assert.match(readFileSync(join(REPO, "commands", "codemap.md"), "utf8"), /edit the frontmatter/i);
 });
 
 test("diff-refs: no args => fallback true; --since returns file lists", () => {
@@ -899,9 +905,30 @@ test("the block bump and the block content ship together (spec contract 24)", ()
   assert.ok(/Report instruction conflicts; do not arbitrate them/.test(tmpl),
     "the conflict clause is the other half of v3");
 
-  // This repo dogfoods the block, so its own copy must be re-registered too.
+  // The harness-parity rules deliberately do NOT live here. They describe
+  // projectstore's own repository — its commands/ directory, its adapters/
+  // tree, its generator — none of which exist in a project that binds to
+  // projectstore, and this template is written verbatim into every one of them.
+  assert.ok(!/A surface added for one harness/.test(tmpl),
+    "repository-development rules must not ship in the user-facing block");
+  assert.ok(!/build-adapters|adapters\/|harnesses\//.test(tmpl),
+    "the user-facing block must not name this repository's internal layout");
+
+  // This repo dogfoods the block, so its own copy must be re-registered too —
+  // but only the MANAGED REGION is the template. Content outside the markers is
+  // hand-written by definition (the marker line says so), and this repo keeps
+  // its harness-parity development rules there.
   const own = readFileSync(join(REPO, "AGENTS.md"), "utf8");
-  assert.equal(own, tmpl, "the repo's own AGENTS.md block is the template, re-registered");
+  const region = (s) => {
+    const a = s.indexOf("<!-- projectstore:agents");
+    const b = s.indexOf("<!-- /projectstore:agents -->");
+    assert.ok(a >= 0 && b > a, "managed markers present");
+    return s.slice(a, b + "<!-- /projectstore:agents -->".length);
+  };
+  assert.equal(region(own), region(tmpl),
+    "the repo's own AGENTS.md managed block is the template, re-registered");
+  assert.ok(/A surface added for one harness/.test(own),
+    "this repo keeps its harness-parity rules — outside the managed block");
 });
 
 test("registration must not strip the new block lines (spec contract 23)", () => {
@@ -1055,10 +1082,32 @@ test("SessionStart: delivers on additionalContext, and the welcome renders once 
   const without = second.hookSpecificOutput.additionalContext;
   assert.ok(!/loaded for the first time/.test(without),
     "the welcome is once per project, not once per session");
-  assert.equal(withWelcome.length - without.length, 1077,
-    "the welcome is a fixed 1,077-character term of the composed value, and the " +
-    "skeleton spec's contract 3 does its arithmetic against exactly this number — " +
-    "if you edited the welcome copy, update that contract in the same change");
+  // Claude Code's is the longest of the bundled harnesses (its update
+  // instructions are the marketplace walkthrough), so it is the term contract 3
+  // must budget for. WELCOME_CAP below pins that it stays the longest.
+  assert.equal(withWelcome.length - without.length, 1081,
+    "the welcome is a fixed 1,081-character term of the composed value under " +
+    "claude-code, and the skeleton spec's contract 3 does its arithmetic against " +
+    "exactly this number — if you edited the welcome copy or a harness's " +
+    "update_instructions, update that contract in the same change");
+});
+
+test("SessionStart: no harness's welcome exceeds the term contract 3 budgets for", async () => {
+  // The welcome is assembled from the active harness's update_instructions, so
+  // adding a harness with a chattier update story would silently push the
+  // composed SessionStart payload past the 10,000-character hook cap — where
+  // the harness replaces the text with a file path and the orientation reaches
+  // nobody. Contract 3's arithmetic uses 1,081; this is what keeps that true.
+  const { harnessIds, loadHarness } = await import("../scripts/harness.mjs");
+  const CLAUDE_CODE_WELCOME = 1081;
+  for (const id of harnessIds()) {
+    const lines = loadHarness(id).update_instructions || [];
+    const len = lines.join("\n").length;
+    const ccLen = (loadHarness("claude-code").update_instructions || []).join("\n").length;
+    assert.ok(len <= ccLen,
+      `harness "${id}" has longer update_instructions (${len}) than claude-code (${ccLen}); ` +
+      `contract 3 budgets ${CLAUDE_CODE_WELCOME} characters for the welcome against the claude-code copy`);
+  }
 });
 
 test("SessionStart: auto_inject false emits no vault content, and still arms the entry reminder", () => {
@@ -1209,7 +1258,7 @@ test("SessionStart contract 3: the sibling list is capped at 5 and says how many
   const ctx = fireSessionStart(proj, { session_id: "cap1", source: "startup" })
     .hookSpecificOutput.additionalContext;
 
-  const listed = (ctx.match(/^- project: /gm) || []).length;
+  const listed = (ctx.match(/^- .*? — project: /gm) || []).length;
   assert.equal(listed, 5, `rendered ${listed} siblings; uncapped this breaches the composed cap at ~32`);
   assert.ok(/…and 35 more/.test(ctx), "a silent truncation reads as a complete answer");
   assert.ok(ctx.length < 10000, `composed payload is ${ctx.length} chars`);
@@ -1237,7 +1286,7 @@ test("SessionStart contract 3: a sibling path and the vault path truncate at 200
   assert.ok(header.includes("…"), "a truncation marks itself");
   assert.ok(header.endsWith(deep.slice(-40)), "the tail is kept — it is the discriminating half");
 
-  const sib = ctx.split("\n").find((l) => l.startsWith("- project: "));
+  const sib = ctx.split("\n").find((l) => /^- .*? — project: /.test(l));
   const cell = sib.match(/`([^`]*)`/)[1];
   assert.ok(cell.length <= 200, `sibling path cell is ${cell.length} chars`);
   assert.ok(cell.startsWith("…"));

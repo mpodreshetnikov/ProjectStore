@@ -1,0 +1,139 @@
+{
+  "_comment": "Harness capability manifest — Claude Code. This is the SOURCE layout: the plugin's own commands/, agents/, skills/ and hooks/hooks.json are already in Claude Code's shapes, so nothing is emitted for it (emit: false). The manifest still exists in full because the portability lint reads every harness's rewrite table, and a token that only Claude Code understands is only detectable as unmapped if Claude Code's own vocabulary is written down somewhere.",
+  "id": "claude-code",
+  "display_name": "Claude Code",
+  "emit": false,
+  "source_layout": true,
+  "output_dir": null,
+  "docs": "https://code.claude.com/docs",
+  "install": {
+    "_comment": "How projectstore is installed for THIS harness. Present because emit:false means install-harness.mjs cannot do it, and \"cannot\" is not the same as \"not needed\" — without this the script answers a user who wants to install projectstore with an internal term and no next step. The script only prints these values; it knows nothing about what they say.",
+    "mechanism": "the built-in plugin marketplace",
+    "why_not_scripted": "Claude Code ships a plugin manager that installs, updates and removes projectstore itself. A copy of it here would be a second, worse one: it would not know about /plugin, auto-update, or pinning a release.",
+    "steps": [
+      "/plugin marketplace add SmartAndPoint/ProjectStore",
+      "/plugin install projectstore@SmartAndPoint",
+      "/reload-plugins"
+    ],
+    "notes": [
+      "Auto-update is OFF by default for third-party plugins: /plugin -> Marketplaces -> SmartAndPoint -> toggle auto-update.",
+      "Pin a release with: /plugin marketplace add SmartAndPoint/ProjectStore#v0.13.0",
+      "From a checkout instead: claude --plugin-dir ./ProjectStore"
+    ],
+    "docs": "https://github.com/SmartAndPoint/ProjectStore#install-2-minutes"
+  },
+  "runtime": {
+    "detect_env": [
+      "CLAUDE_PLUGIN_ROOT",
+      "CLAUDE_PROJECT_DIR",
+      "CLAUDE_CONFIG_DIR"
+    ],
+    "project_dir_env": "CLAUDE_PROJECT_DIR",
+    "plugin_root_env": "CLAUDE_PLUGIN_ROOT",
+    "home_env": "CLAUDE_CONFIG_DIR",
+    "home_default": ".claude",
+    "project_config_dir": ".claude",
+    "config_basename": "projectstore.json"
+  },
+  "tools": {
+    "write_tools": [
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "NotebookEdit"
+    ],
+    "path_fields": [
+      "file_path",
+      "notebook_path",
+      "path"
+    ],
+    "patch_envelope_field": null,
+    "approval_tool": "AskUserQuestion",
+    "write_tool_name": "the Write tool",
+    "edit_tool_name": "the Edit tool",
+    "known_non_write_tools": [
+      "Bash",
+      "Read",
+      "Grep",
+      "Glob",
+      "LS",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "TodoWrite"
+    ]
+  },
+  "hooks": {
+    "config_file": "hooks/hooks.json",
+    "events": {
+      "SessionStart": "SessionStart",
+      "PreToolUse": "PreToolUse",
+      "PostToolUse": "PostToolUse",
+      "Stop": "Stop",
+      "PreCompact": "PreCompact"
+    },
+    "unsupported_events": [],
+    "matchers": {
+      "write": "Edit|Write|MultiEdit|NotebookEdit"
+    },
+    "root_placeholder": "${CLAUDE_PLUGIN_ROOT}"
+  },
+  "surfaces": {
+    "commands": {
+      "supported": true,
+      "dir": "commands",
+      "file": "<name>.md",
+      "format": "command-md",
+      "invocation": "/projectstore:<name>",
+      "scope": "user"
+    },
+    "agents": {
+      "supported": true,
+      "dir": "agents",
+      "file": "<name>.md",
+      "format": "agent-md",
+      "invocation": "projectstore:<name>",
+      "scope": "user"
+    },
+    "skills": {
+      "supported": true,
+      "dir": "skills",
+      "file": "<name>/SKILL.md",
+      "format": "skill-md",
+      "scope": "user"
+    },
+    "hooks": {
+      "supported": true,
+      "dir": "hooks",
+      "file": "hooks.json",
+      "format": "hooks-json",
+      "scope": "user"
+    },
+    "_scope_comment": "Claude Code loads these from the plugin installation itself rather than from a per-project directory, so the distinction does not arise; recorded for the schema's sake."
+  },
+  "capabilities": {
+    "statusline": true,
+    "interactive_approval_tool": true,
+    "permission_decision_hook": "PreToolUse",
+    "subagent_tool_allowlist": true,
+    "subagent_model_per_invocation": true,
+    "_comment": "permission_decision_hook was recorded as false, which is wrong: PreToolUse accepts hookSpecificOutput.permissionDecision (allow|deny|ask), and there is a separate PermissionRequest event with its own decision object. The error mattered because it made the prose approval gate on other harnesses look like an unavoidable degradation rather than an unimplemented feature on every harness."
+  },
+  "rewrites": [],
+  "update_instructions": [
+    "**About future updates**: Claude Code does NOT auto-update third-party marketplaces by default. To get notified of new releases (v0.7+):",
+    "1. Open `/plugin` → **Marketplaces** tab.",
+    "2. Find **SmartAndPoint**.",
+    "3. Toggle **auto-update** on.",
+    "",
+    "Without it, you would run `/plugin marketplace update SmartAndPoint` manually. See https://github.com/SmartAndPoint/ProjectStore#updates for details."
+  ],
+  "agent_translation": {
+    "model_presets": [
+      "opus",
+      "fable",
+      "sonnet"
+    ],
+    "model_preset_advice": "Options: keep bundled default (`opus`) / `fable` / `sonnet` / custom model ID (free-form)."
+  }
+}

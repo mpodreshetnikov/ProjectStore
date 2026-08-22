@@ -26,8 +26,15 @@ import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { diffAgainstDisk } from "./build-adapters.mjs";
+import { isProjectTrusted } from "./install-harness.mjs";
+import {
+  emittingHarnesses, activeHarness, commandRef, localizeCommands,
+  hasCapability, projectConfigDir, REPO_ROOT,
+} from "./harness.mjs";
 import {
   readConfig,
+  configPath,
   loadLayout,
   folderByKind,
   parseFrontmatter,
@@ -68,7 +75,7 @@ const AGENT_BLOCK_MARKER = /<!--\s*projectstore:agents v(\d+)/g;
 // without it no bound project ever learns the block changed. The cost is that
 // every already-bound project reports an install issue until it re-runs
 // /projectstore:agents register — intended, and disclosed in the release note.
-const AGENT_BLOCK_VERSION = 3;
+const AGENT_BLOCK_VERSION = 4;
 // The live roster. A copy carrying one of these names does NOT override the
 // bundled agent (ADR-008, verified 2026-08-05): plugin agents register under a
 // scoped id, project/user copies register bare, so the names never collide and
@@ -94,7 +101,9 @@ const LEGACY_AGENTS = {
 const BUNDLED_AGENT_NAMES = [...CURRENT_AGENT_NAMES, ...Object.keys(LEGACY_AGENTS)];
 
 function finding(group, level, check, message, file) {
-  const f = { group, level, check, message };
+  // Single choke point for command spelling: every doctor message names
+  // commands, and this is the one place all of them pass through.
+  const f = { group, level, check, message: localizeCommands(message) };
   if (file) f.file = file;
   return f;
 }
@@ -122,7 +131,7 @@ function listMd(dir) {
 export function checkConfig(cfg) {
   if (!cfg) {
     return [finding("install", "issue", "config",
-      "No projectstore config (.claude/projectstore.json). Run /projectstore:bind <vault-path>.")];
+      `No projectstore config (${configPath()}). Run ${commandRef("bind")} <vault-path>.`)];
   }
   const out = [];
   if (!cfg.vault_path) out.push(finding("install", "issue", "config", "Config has no vault_path."));
@@ -183,11 +192,51 @@ export function checkLayoutTemplates(cfg) {
   return out;
 }
 
+// Names the trust requirement only on a harness that has one, and only when
+// this project actually fails it — so it never appears as noise on Claude Code.
+function trustHint() {
+  try {
+    const m = activeHarness();
+    if (!m?.runtime?.project_trust) return "";
+    const proj = projectRoot();
+    if (isProjectTrusted(m, proj)) return "";
+    return `Also: this project is NOT trusted, so ${m.display_name} ignores its ` +
+      `${m.runtime.project_config_dir}/ layer entirely — project-scoped hooks never load. ` +
+      `Repair: node scripts/install-harness.mjs ${proj} --trust`;
+  } catch {
+    return "";
+  }
+}
+
+// The second gate. Unlike project trust this cannot be inspected from here —
+// the approval lives in the harness's own store, keyed by hook hash — so it is
+// stated as the thing to check rather than reported as a finding.
+function reviewHint() {
+  try {
+    const m = activeHarness();
+    const rev = m?.runtime?.hook_review;
+    if (!rev) return "";
+    return ` And check the hooks are TRUSTED, not merely listed: ${m.display_name} shows ` +
+      `them in ${rev.ui_path} (or ${rev.cli_command}) while skipping them until each ` +
+      `definition is approved, and an update that rewrites a definition revokes that approval.`;
+  } catch {
+    return "";
+  }
+}
+
 export function checkHooksAlive(cfg, maxAgeMinutes = 30) {
   const dir = join(cfg.vault_path, ".projectstore", "sessions");
   if (!existsSync(dir)) {
+    // Two ordinary reasons and one real fault share this symptom, and the
+    // generic wording sent a tester chasing the wrong one for an hour. Name
+    // the fault when it is present: on a harness that gates project-scoped
+    // config behind trust, an untrusted project's hooks never load, silently.
     return [finding("install", "warn", "hooks",
-      "No session registry in the vault — SessionStart hook may not be firing (or no session started yet).")];
+      "No session registry in the vault — SessionStart may not be firing. " +
+      "Ordinary causes: no session has started since the vault was created " +
+      "(the session that scaffolds a vault registers nothing, by design), or " +
+      "hooks are not installed. " + trustHint() + reviewHint(),
+    )];
   }
   const cutoff = Date.now() - maxAgeMinutes * 60 * 1000;
   const fresh = readdirSync(dir).some((n) => {
@@ -215,6 +264,14 @@ export function statusLineScriptVersion(scriptPath) {
 // Read-only probe of the statusline wiring (never calls syncStatusLine, which
 // is a mutating self-heal that SessionStart already ran — ADR-005).
 export function checkStatusline(cfg, proj, home = homedir()) {
+  // syncStatusLine and checkGitignore both learned this gate; this check did
+  // not, and it is the one inside the startup budget. On a harness with no
+  // status line slot, a project whose config carries statusline.enabled — a
+  // Claude Code bind, opened in Codex, which is this feature's own headline use
+  // case — found no wiring, reported an ISSUE, and advised a restart that can
+  // never wire it, on every single session start. A permanent, unfixable,
+  // once-per-session error is worse than no check.
+  if (!hasCapability("statusline")) return [];
   const out = [];
   const local = join(proj, ".claude", "settings.local.json");
   let cur = null;
@@ -278,7 +335,10 @@ export function checkStatusline(cfg, proj, home = homedir()) {
   // hooks observed. A breadcrumb id with no pointer file while others exist
   // means the two processes disagree — the issue note's second suspect.
   try {
-    const sdir = join(proj, ".claude", ".projectstore", "state");
+    // lib.mjs's sessionStateDir follows the active harness; this read of the
+    // same directory was still pinned to .claude, so under any other harness
+    // doctor inspected a directory nothing writes.
+    const sdir = join(projectConfigDir(proj), ".projectstore", "state");
     const bc = JSON.parse(readFileSync(join(sdir, ".last-render.json"), "utf8"));
     if (bc && bc.session_id) {
       const hookIds = readdirSync(sdir)
@@ -348,9 +408,17 @@ export function checkAgentsBlock(proj) {
 export function checkOverrideCopies(proj, home = homedir()) {
   const out = [];
   const ver = pluginVersion();
+  // Both scopes follow the active harness: a leftover copy under ~/.codex/agents
+  // shadows nothing on Claude Code and vice versa, so reporting the other
+  // harness's directory would be a finding the user cannot act on.
+  const d = activeHarness()?.runtime?.project_config_dir || ".claude";
+  // basename, not the raw path: with CLAUDE_CONFIG_DIR=/opt/cc-config the label
+  // read "~/cc-config/agents", which names a directory that does not exist.
+  const agentHomeDir = claudeHome(home);
+  const hd = agentHomeDir.startsWith(home + "/") ? "~/" + agentHomeDir.slice(home.length + 1) : agentHomeDir;
   const scopes = [
-    { dir: join(proj, ".claude", "agents"), label: ".claude/agents", scope: "project" },
-    { dir: join(home, ".claude", "agents"), label: "~/.claude/agents", scope: "user" },
+    { dir: join(proj, d, "agents"), label: `${d}/agents`, scope: "project" },
+    { dir: join(agentHomeDir, "agents"), label: `${hd}/agents`, scope: "user" },
   ];
   for (const { dir, label, scope } of scopes) {
     for (const f of listMd(dir)) {
@@ -442,13 +510,19 @@ export function checkGitignore(proj) {
   try {
     lines = readFileSync(join(proj, ".gitignore"), "utf8").split("\n").map((l) => l.trim());
   } catch {}
-  const coveredAll = lines.includes(".claude/") || lines.includes(".claude");
+  // The directory to check is the ACTIVE harness's, not always ".claude/":
+  // machine-local state follows the harness, so a Codex user with only
+  // ".claude/" ignored would be committing their own session pointers.
+  const m = activeHarness();
+  const d = m?.runtime?.project_config_dir || ".claude";
+  const coveredAll = lines.includes(`${d}/`) || lines.includes(d);
   if (coveredAll) return [];
-  const wanted = [".claude/projectstore.json", ".claude/settings.local.json", ".claude/.projectstore/"];
+  const wanted = [`${d}/projectstore.json`, `${d}/.projectstore/`];
+  if (m?.capabilities?.statusline) wanted.splice(1, 0, `${d}/settings.local.json`);
   const missing = wanted.filter((w) => !lines.includes(w));
   if (!missing.length) return [];
   return [finding("install", "warn", "gitignore",
-    `Machine-specific files not gitignored: ${missing.join(", ")} (or ignore ".claude/" wholesale).`)];
+    `Machine-specific files not gitignored: ${missing.join(", ")} (or ignore "${d}/" wholesale).`)];
 }
 
 export function checkVaultGit(cfg) {
@@ -1405,8 +1479,81 @@ export function checkGraph(cfg) {
 
 // ─── Runners ───────────────────────────────────────────────────────────
 
+// Are the generated harness adapters in step with the source surfaces?
+//
+// tests/portability.test.mjs is the real gate, but it runs in a checkout by
+// someone who chose to run it. A user who installed from a checkout and then
+// pulled a commit that edited a command has an adapter tree that no longer
+// matches — and nothing in a session would say so. Codex would go on serving
+// the previous prompt, which is the failure mode with no symptom at all.
+//
+// Silent when there is nothing to compare: a marketplace install ships no
+// harnesses/ directory, and reporting "cannot check" every session is how a
+// report earns being ignored.
+export function checkAdapters() {
+  let harnesses;
+  try {
+    harnesses = emittingHarnesses();
+  } catch {
+    return [];
+  }
+  if (!harnesses.length) return [];
+
+  let d;
+  try {
+    // Inside the guard: a manifest declaring emit without output_dir makes
+    // join() throw a TypeError, and runInstallChecks has no guard of its own —
+    // so a malformed manifest would crash the whole doctor run rather than
+    // producing a finding.
+    if (!existsSync(join(REPO_ROOT, harnesses[0].output_dir))) return [];
+    d = diffAgainstDisk(REPO_ROOT);
+  } catch (e) {
+    return [finding("install", "warn", "adapters",
+      `Could not verify the generated harness adapters: ${e.message}`)];
+  }
+  if (d.ok) return [];
+
+  const n = d.missing.length + d.changed.length + d.stale.length;
+  const sample = [...d.missing, ...d.changed, ...d.stale].slice(0, 3).join(", ");
+  const active = activeHarness();
+  const mine = active && !active.source_layout
+    ? " This is the harness you are running on, so the surfaces in this session may be the stale ones."
+    : "";
+  return [finding("install", "warn", "adapters",
+    `${n} generated harness adapter file(s) are out of date (${sample}${n > 3 ? ", …" : ""}). ` +
+    `Other harnesses are being served surfaces that no longer match the source.${mine} ` +
+    `Repair: node scripts/build-adapters.mjs`)];
+}
+
+// A hook that throws on every turn is invisible: the wrapper exits zero so the
+// session never breaks, and nothing else executes a hook to find out. The
+// wrapper leaves a breadcrumb precisely so this check can exist — without it,
+// the "loud finding in doctor" that justified swallowing the error was a
+// promise nothing kept.
+export function checkHookErrors() {
+  const log = join(REPO_ROOT, ".projectstore", "hook-errors.log");
+  let text;
+  try {
+    if (!existsSync(log)) return [];
+    text = readFileSync(log, "utf8");
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n").filter(Boolean);
+  if (!lines.length) return [];
+  const last = lines[lines.length - 1].split("\t");
+  return [finding("install", "warn", "hook-errors",
+    `${lines.length} hook launch failure(s) recorded in .projectstore/hook-errors.log — ` +
+    `hooks are exiting silently instead of running. Most recent: ${last[1] || "?"} — ` +
+    `${(last[2] || "").slice(0, 160)}. Delete the log after fixing to clear this.`)];
+}
+
 export function runInstallChecks(cfg, proj) {
-  const out = [...checkConfig(cfg)];
+  // Before the bound-project gate: adapter staleness is a property of the
+  // checkout, not of any vault, and it is exactly as wrong in an unbound
+  // project. Behind the gate it would only ever be reported to people who
+  // already have everything else working.
+  const out = [...checkConfig(cfg), ...checkAdapters(), ...checkHookErrors()];
   if (!cfg || !cfg.vault_path) return out;
   out.push(...checkVaultPath(cfg));
   if (out.some((f) => f.check === "vault-path" && f.level === "issue")) return out;
@@ -1507,7 +1654,12 @@ function report(findings, groups) {
   const issues = findings.filter((f) => f.level === "issue").length;
   const warns = findings.filter((f) => f.level === "warn").length;
   lines.push("", `Summary: ${issues} issue(s), ${warns} warning(s). ${issues ? "Repairs: /projectstore:doctor --fix (install), /projectstore:kanban / reconcile (vault)." : "Vault and wiring look healthy."}`);
-  return lines.join("\n");
+  // Localized on the way OUT rather than per string. Every finding() message
+  // already goes through it, which is exactly why the summary line above kept
+  // its source spelling unnoticed: it is assembled here, not there. Doing it at
+  // the choke point means the next literal added to this function cannot leak
+  // the source harness's spelling either.
+  return localizeCommands(lines.join("\n"));
 }
 
 function main() {

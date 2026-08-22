@@ -16,15 +16,16 @@
 // Spec: "Entry-rule detection: the score, the open-story predicate, and the
 // delivery seams", contract 17.
 
-import { readConfig } from "../scripts/lib.mjs";
+import { readConfig, readStdinJson } from "../scripts/lib.mjs";
+import { agentRef, adoptHookInput } from "../scripts/harness.mjs";
 
 // Kept well under the cap; asserted by a test rather than by intention.
-const RULES = `# projectstore — standing rules for this session
+const RULES = () => `# projectstore — standing rules for this session
 
 **Artifact-first order.** A feature-sized request opens a vault artifact before
 it opens an editor: analysis → placement (which epic, which story) → an ADR
-and/or spec when the "how" is non-trivial → \`projectstore:critic\` → only then
-implementation → \`projectstore:reviewer\`. "Feature-sized" is not a judgement
+and/or spec when the "how" is non-trivial → \`${agentRef("critic")}\` → only then
+implementation → \`${agentRef("reviewer")}\`. "Feature-sized" is not a judgement
 call about how the request was phrased — it is about what the work touches. If
 you are about to write across several source files, open the story first.
 
@@ -40,12 +41,15 @@ function emit(additionalContext) {
 }
 
 function main() {
+  // Same ordering rule as every other hook: the payload's `cwd` has to be
+  // adopted before config lookup resolves a project root.
+  adoptHookInput(readStdinJson());
   const cfg = readConfig();
   if (!cfg) return;
   // Honour auto_inject: a session that opted out of context injection is
   // exactly the case for which the AGENTS.md block remains the durable copy.
   if (cfg.auto_inject === false) return;
-  emit(RULES);
+  emit(RULES());
 }
 
 try { main(); } catch {

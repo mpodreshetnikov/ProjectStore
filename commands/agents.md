@@ -1,5 +1,5 @@
 ---
-description: Manage bundled-agent integration in this project — register/unregister the routing block in CLAUDE.md/AGENTS.md, inspect state, or configure which model its agents run on.
+description: Manage bundled-agent integration in this project — register/unregister the routing block in the project's agent-instructions file, inspect state, or configure which model its agents run on.
 argument-hint: "<register | unregister | status | configure>"
 ---
 
@@ -21,6 +21,7 @@ subcommand (`.claude/projectstore.json`; else point to `/projectstore:bind`).
    hooks disabled the block is the only thing carrying it.
    Only *routable* agents get lines (critic/planner/reviewer) — `librarian` and
    `archaeologist` have no per-turn trigger and are deliberately absent.
+<!-- projectstore:harness only=claude-code -->
 2. **Scan BOTH `CLAUDE.md` and `AGENTS.md`** for `<!-- projectstore:agents` markers:
    - block already present in the preferred location and current version → report "already registered", stop;
    - present in the non-preferred location → offer to **migrate** (move, never duplicate);
@@ -28,15 +29,28 @@ subcommand (`.claude/projectstore.json`; else point to `/projectstore:bind`).
 3. **Placement** (never duplicate): `AGENTS.md` exists → block goes there, and
    ensure `CLAUDE.md` contains an `@AGENTS.md` import line (add with approval if
    missing). Else → `CLAUDE.md` (create the file with approval if absent).
+<!-- /projectstore:harness --><!-- projectstore:harness-alt except=claude-code
+2. **Scan `AGENTS.md`** for `<!-- projectstore:agents` markers: block present and
+   current → report "already registered", stop; stale version marker → offer to
+   replace the block in place.
+3. **Placement**: always `AGENTS.md` at the project root — this harness reads it
+   natively, so there is no import line to maintain and no second file to scan.
+   Create it with approval if absent.
+-->
 4. **Every write approval-gated** (path + diff preview via AskUserQuestion). The
    step fans out to 2–3 prompts in the common case — that is by design.
 
 ## `unregister` — remove what register added
 
 1. Remove the marked block (approval with diff preview).
+<!-- projectstore:harness only=claude-code -->
 2. With a **separate** approval each: remove an `@AGENTS.md` import line that
    registration added, and delete a `CLAUDE.md` that registration created if it
    is now otherwise empty. Never touch user-authored content.
+<!-- /projectstore:harness --><!-- projectstore:harness-alt except=claude-code
+2. Delete an `AGENTS.md` that registration created if it is now otherwise empty
+   (separate approval). Never touch user-authored content.
+-->
 
 ## `status` — read-only report
 
@@ -44,9 +58,11 @@ subcommand (`.claude/projectstore.json`; else point to `/projectstore:bind`).
   names vs the layout roster.
 - Model: the resolved model per roster agent from `projectstore.json → agents`
   (per-agent value, else default, else "the agent's own frontmatter"), and
+<!-- projectstore:harness only=claude-code -->
   whether `CLAUDE_CODE_SUBAGENT_MODEL` is set (it overrides everything) and
   whether `CLAUDE_CODE_EFFORT_LEVEL` is set (ADR-008 makes it the only thing that
   can move the agents off `effort: max`, and it beats frontmatter).
+<!-- /projectstore:harness -->
 - Leftover copies: anything in `.claude/agents/` or `~/.claude/agents/` carrying
   `# source: projectstore v…`. Report these as **overriding nothing** (ADR-008)
   and point at `configure` to clean them up — do not present them as the active
@@ -67,14 +83,30 @@ subcommand (`.claude/projectstore.json`; else point to `/projectstore:bind`).
 1. **Preset question** (one choice for ALL roster agents), with this education
    line in the question text: *"These agents don't write code — they are
    critics, planners, and reviewers; they perform best on strong models at high
+<!-- projectstore:harness only=claude-code -->
    effort."* Options: keep bundled default (`opus`) / `fable` / `sonnet` /
    custom model ID (free-form). Offer the current session's model as a hint
-   option — you know what you are running on. **Do not ask about effort** — see
+   option — you know what you are running on.
+<!-- /projectstore:harness --><!-- projectstore:harness-alt except=claude-code
+   effort."* Do NOT offer a preset list of model names: model ids differ per
+   harness and any list written into this prompt goes stale. Ask the user to
+   name a model their own install actually offers (the harness's model picker
+   lists them), offer the current session's model as a hint — you know what you
+   are running on — and make skipping the obvious choice: with no key set, an
+   agent inherits the session's model, which is the sane default.
+--> **Do not ask about effort** — see
    step 5. **`inherit` is no longer offered**: it meant "follow the session's
+<!-- projectstore:harness only=claude-code -->
    model", and that cannot be expressed per invocation — passing nothing falls
-   through to the bundled `model: opus`, not to the session. A user who wants
-   session-follow behaviour should pick their session's model explicitly, or set
-   `CLAUDE_CODE_SUBAGENT_MODEL=inherit`, which does mean exactly that.
+   through to the bundled `model: opus`, not to the session.
+<!-- /projectstore:harness --><!-- projectstore:harness-alt except=claude-code
+   model", and that cannot be expressed per invocation. Passing nothing falls
+   through to the agent's own frontmatter — and since the bundled frontmatter
+   names a model this harness does not have, the translation drops it, so an
+   agent with no configured model does inherit the session's here.
+--> A user who wants
+   session-follow behaviour should pick their session's model explicitly<!-- projectstore:harness only=claude-code -->, or set
+   `CLAUDE_CODE_SUBAGENT_MODEL=inherit`, which does mean exactly that<!-- /projectstore:harness -->.
 2. **Optional follow-up**: "configure individually?" → per-agent model for each
    roster agent. Skippable.
 3. **Apply**: write the choice to `projectstore.json → agents: { default:
@@ -93,11 +125,11 @@ subcommand (`.claude/projectstore.json`; else point to `/projectstore:bind`).
 5. **Effort is not configurable per project.** The bundled agents ship
    `effort: max`, which is the recommended value, and there is no
    per-invocation effort parameter — only frontmatter, settings, or
-   `CLAUDE_CODE_EFFORT_LEVEL`. If the user asks for a different effort, say
-   that plainly and point at the env var; do not write a copy to achieve it.
+   the harness's own effort setting. If the user asks for a different effort, say
+   that plainly<!-- projectstore:harness only=claude-code --> and point at `CLAUDE_CODE_EFFORT_LEVEL`<!-- /projectstore:harness -->; do not write a copy to achieve it.
 6. **Honesty notes to print**: an org `availableModels` allowlist silently
-   downgrades excluded models; the `CLAUDE_CODE_SUBAGENT_MODEL` env var
-   overrides everything configured here, per-invocation parameter included.
+   downgrades excluded models<!-- projectstore:harness only=claude-code -->; the `CLAUDE_CODE_SUBAGENT_MODEL` env var
+   overrides everything configured here, per-invocation parameter included<!-- /projectstore:harness -->.
    `/projectstore:doctor` validates config shape and reports leftover copies —
    not entitlement, and not whether a given spawn actually passed the model.
 7. **No restart is needed** — nothing about the agent list changed. The model
@@ -125,8 +157,8 @@ leftover: ignore it.
 and spawns a session makes while following the registration block. It does *not*
 reach description-based auto-delegation, where the platform picks the agent and
 there is no invocation site to attach a model to — those always run the bundled
-frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL` is the only mechanism that covers every
-path, at the cost of applying to every subagent on the machine.
+frontmatter.<!-- projectstore:harness only=claude-code --> `CLAUDE_CODE_SUBAGENT_MODEL` is the only mechanism that covers every
+path, at the cost of applying to every subagent on the machine.<!-- /projectstore:harness -->
 
 ## Notes
 

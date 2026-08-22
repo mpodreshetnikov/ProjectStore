@@ -58,6 +58,7 @@ import {
   ENTRY_THRESHOLD,
   isWriteTool,
 } from "./lib.mjs";
+import { extractPaths, localizeCommands, adoptHookInput } from "./harness.mjs";
 
 const NUDGE_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -94,7 +95,9 @@ function updatePointerAndNudge(cfg, proj, sid, filePath, toolName) {
     const last = st && st.nudged_at ? Date.parse(st.nudged_at) : 0;
     if (Date.now() - last > NUDGE_INTERVAL_MS) {
       nudge =
-        "projectstore: vault file edited directly — if this bypassed a /projectstore:* command, run /projectstore:reconcile (or doctor) afterwards so the board/indexes stay in sync.";
+        localizeCommands(
+          "projectstore: vault file edited directly — if this bypassed a /projectstore:* command, " +
+          "run /projectstore:reconcile (or doctor) afterwards so the board/indexes stay in sync.");
       patch = { ...(patch || {}), nudged_at: new Date().toISOString() };
     }
   }
@@ -103,31 +106,53 @@ function updatePointerAndNudge(cfg, proj, sid, filePath, toolName) {
   if (nudge) process.stdout.write(JSON.stringify({ systemMessage: nudge }) + "\n");
 }
 
-function extractToolPath(input) {
-  if (!input || !input.tool_input) return null;
-  const ti = input.tool_input;
-  return ti.file_path || ti.notebook_path || ti.path || null;
+// A LIST, not a path. Claude Code's write tools carry one target each, but
+// Codex reports a whole patch as a single apply_patch call, and a patch may add
+// three files and delete a fourth. Returning the first of them would have
+// scored one file where four were written and logged one activity entry where
+// four belonged — an undercount that looks exactly like normal operation.
+// Which fields (and which patch envelope) to read comes from the harness
+// manifest, so this function has no harness knowledge of its own.
+function extractToolPaths(input) {
+  return extractPaths(input);
 }
 
-// The source-side branch (PostToolUse). Never throws: every failure here must
-// leave the user's tool call untouched.
-async function entryBranch(cfg, proj, sid, filePath, input) {
-  // Writes only. extractToolPath happily yields a path for Read, Grep, Glob and
+// PostToolUse, split in two because a tool call now carries MANY paths.
+//
+// Registration is per path; the decision to remind is once per call. Running
+// the decision inside the loop was wrong in two ways that only a multi-path
+// harness exposes:
+//
+//   * the `unknown` verdict exits the process, so paths after the first were
+//     never registered — the same undercount the list-return exists to prevent;
+//   * a patch crossing the threshold mid-loop could spend BOTH reminder slots
+//     in one call and write two JSON objects to one hook's stdout.
+//
+// Never throws: every failure here must leave the user's tool call untouched.
+
+// Per path. Returns whether this path counted as source work.
+function registerPath(cfg, proj, sid, filePath, input) {
+  // Writes only. extractToolPaths happily yields a path for Read, Grep, Glob and
   // LS — all of which carry file_path or path — so without this gate three
   // read-only calls would trip the threshold and the reminder would announce
   // work that never happened. (Grep's `path` is often a directory, which would
   // then be counted as a "source file".) The event tells us the call succeeded;
   // only the tool name tells us it wrote.
-  if (!isWriteTool(input.tool_name || "")) return;
-  if (!isSourcePath(filePath, proj, cfg.vault_path)) return;
+  if (!isWriteTool(input.tool_name || "")) return false;
+  if (!isSourcePath(filePath, proj, cfg.vault_path)) return false;
 
   // Belt and braces. PostToolUse only fires after success — failures raise
   // PostToolUseFailure, which this script is not registered on — so the event
   // itself is the discrimination. Nothing may DEPEND on this field's shape.
-  if (input.tool_response && input.tool_response.success === false) return;
+  if (input.tool_response && input.tool_response.success === false) return false;
 
   registerSourcePath(proj, sid, filePath);
+  return true;
+}
 
+// Once per tool call, after every path has been registered — so the score it
+// reads is the whole call's, and at most one reminder can be elected.
+async function maybeRemind(cfg, proj, sid, input) {
   // Subagents count toward the score but are never the audience: a reminder
   // delivered there reaches an actor mid-implementation under explicit
   // instructions, who cannot open a story.
@@ -147,9 +172,11 @@ async function entryBranch(cfg, proj, sid, filePath, input) {
     // Reached either from a fresh sweep that hit its budget with reads still
     // outstanding (the event loop would keep this hook alive until they settle)
     // or from a cached unknown, where nothing is outstanding and the exit is
-    // merely redundant. Exiting is safe here and only here: an unknown verdict suppresses the reminder, so stdout is
-    // untouched — process.exit does not flush pending pipe writes, and exiting
-    // after emitting would truncate the reminder.
+    // merely redundant. Exiting is safe here and only here: an unknown verdict
+    // suppresses the reminder, so stdout is untouched — process.exit does not
+    // flush pending pipe writes, and exiting after emitting would truncate the
+    // reminder. It is also now reached only AFTER every path is registered,
+    // so it can no longer truncate a multi-file call's registration.
     process.exit(0);
   }
   if (verdict !== false) return;
@@ -165,10 +192,13 @@ async function entryBranch(cfg, proj, sid, filePath, input) {
 }
 
 async function main() {
+  // stdin BEFORE readConfig: config lookup resolves against the project root,
+  // and on a harness that exports no project-dir variable the payload's `cwd` is
+  // the only reliable source for it. Reading config first would search the hook
+  // process's own working directory and report an unbound project.
+  const input = adoptHookInput(readStdinJson());
   const cfg = readConfig();
   if (!cfg) return;
-
-  const input = readStdinJson();
   if (!input) return;
   const sid = input.session_id;
   if (!sid) return;
@@ -194,15 +224,24 @@ async function main() {
   }
 
   if (!input.tool_name) return;
-  const filePath = extractToolPath(input);
-  if (!filePath) return;
+  const filePaths = extractToolPaths(input);
+  if (filePaths.length === 0) return;
 
   if (event === "PostToolUse") {
-    await entryBranch(cfg, proj, sid, filePath, input);
+    // Register every path first, then decide once. Sequential, not
+    // Promise.all: registerSourcePath rewrites this session's score markers,
+    // and the whole point of the marker-file design is that it never does an
+    // unguarded read-modify-write.
+    let counted = false;
+    for (const filePath of filePaths) {
+      if (registerPath(cfg, proj, sid, filePath, input)) counted = true;
+    }
+    if (counted) await maybeRemind(cfg, proj, sid, input);
     return;
   }
 
-  if (isInsideVault(filePath, cfg.vault_path)) {
+  for (const filePath of filePaths) {
+    if (!isInsideVault(filePath, cfg.vault_path)) continue;
     try { appendActivity(cfg.vault_path, sid, filePath, input.tool_name); } catch {}
     try { updatePointerAndNudge(cfg, proj, sid, filePath, input.tool_name); } catch {}
   }

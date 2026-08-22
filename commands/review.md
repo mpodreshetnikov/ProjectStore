@@ -23,7 +23,7 @@ You are running a peer review on a projectstore artifact.
 
 5. **Gather domain context**: read the vault's top-level `README.md` and the folder README of the artifact's parent (e.g. `adr/README.md`). Keep both short — they're context for the critic, not the focus.
 
-6. **Spawn the critic agent**. Prefer this plugin's own `projectstore:critic` (purpose-built fresh-context critic, no sycophancy; named `projectstore:projectstore-critic` before v0.13). If unavailable, fall back to `oh-my-claudecode:critic`, then `general-purpose`. Use this exact prompt template:
+6. **Spawn the critic agent**. Prefer this plugin's own `projectstore:critic` (purpose-built fresh-context critic, no sycophancy<!-- projectstore:harness only=claude-code -->; named `projectstore:projectstore-critic` before v0.13<!-- /projectstore:harness -->).<!-- projectstore:harness only=claude-code --> If unavailable, fall back to `oh-my-claudecode:critic`, then `general-purpose`.<!-- /projectstore:harness --> Use this exact prompt template:
 
    ```
    You are a critic-mode reviewer. You have ONLY the artifact and the
@@ -64,7 +64,7 @@ You are running a peer review on a projectstore artifact.
 
    Set the agent description to: `Peer-review of {{kind}} artifact at {{path}}`. Pass it as a foreground task (you need the result to continue).
 
-   **Model (ADR-008)**: resolve `agents.per_agent.critic.model ?? agents.default.model` from `.claude/projectstore.json` and pass it as the spawn's model parameter. Missing key, `inherit`, or unreadable config → pass nothing and let the agent's own frontmatter decide; never guess a model. This is the only way the configured model reaches the agent — there are no override copies (`/projectstore:agents configure`). When falling back to `oh-my-claudecode:critic` or `general-purpose`, pass the same model.
+   **Model (ADR-008)**: resolve `agents.per_agent.critic.model ?? agents.default.model` from `.claude/projectstore.json` and pass it as the spawn's model parameter. Missing key, `inherit`, or unreadable config → pass nothing and let the agent's own frontmatter decide; never guess a model. This is the only way the configured model reaches the agent — there are no override copies (`/projectstore:agents configure`).<!-- projectstore:harness only=claude-code --> When falling back to `oh-my-claudecode:critic` or `general-purpose`, pass the same model.<!-- /projectstore:harness -->
 
 7. **Show findings**: print the agent's report verbatim. Number is its number.
 
@@ -74,11 +74,11 @@ You are running a peer review on a projectstore artifact.
    - **Note for later** — leave artifact untouched, but append a `## Review notes` section at the bottom of the file (after user approval) summarizing findings.
    - **Skip** — do nothing, just close.
 
-9. **On any apply path**, after each Edit (approved by AskUserQuestion), update the frontmatter:
+9. **On any apply path**, after each edit (approved by AskUserQuestion), update the frontmatter:
    - `review_status: reviewed`
    - `reviewed_at: <today's date YYYY-MM-DD>`
 
-   Do this with one final Edit after all content changes are applied.
+   Do this with one final edit after all content changes are applied.
 
 10. **Final print**: file path, what was applied / noted / skipped, and a one-line hint to commit the review if the vault is git-tracked.
 

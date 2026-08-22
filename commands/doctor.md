@@ -24,24 +24,32 @@ You are running projectstore diagnostics (ADR-005: umbrella doctor).
    - `gitignore` → offer appending the missing entries via Edit.
    - `agents-block` duplicate → show both blocks, offer removing the one in the
      non-preferred location (Edit after approval).
+<!-- projectstore:harness only=claude-code -->
    - `statusline` issues → explain the SessionStart hook owns the wiring
      (self-heals on restart); offer running `/projectstore:statusline on|off`
      to reconcile the flag, and remind that a restart applies it.
+<!-- /projectstore:harness -->
    - `override-copies` → a copy carrying the provenance marker overrides nothing
      (ADR-008): offer to **delete** it (approval-gated, one prompt per file), and
      say that `/projectstore:agents configure` now records the model in
      `.claude/projectstore.json` instead. Never offer to delete — or edit — a
      copy reported at `info`: no provenance marker means we cannot prove it is
      ours, and it may be the user's own agent.
+<!-- projectstore:harness only=claude-code -->
    - `auto-update` off → offer adding `extraKnownMarketplaces.<marketplace>.autoUpdate: true`
      to `~/.claude/settings.json` (Edit with diff preview + approval — this is the
      user's global settings file), or point at `/plugin` → Marketplaces → toggle.
      For "newer version available" → tell the user to run
      `/plugin marketplace update <marketplace>` and `/reload-plugins` themselves.
+<!-- /projectstore:harness --><!-- projectstore:harness-alt except=claude-code
+   - `auto-update` / `statusline` findings do not apply on this harness and are
+     not emitted by `doctor` here. If one appears anyway, report it as an
+     installation carried over from another harness rather than acting on it.
+-->
 
    **Boundary (ADR-005)**: `--fix` never repairs vault-side findings. For those,
    point at `/projectstore:kanban` (board regen) and `/projectstore:reconcile`
-   (indexes + code-map + graph). Never offer a hand-written Edit of an index
+   (indexes + code-map + graph). Never offer a hand-written edit of an index
    row: derived views are only ever written by the core's regeneration.
 
    `work-without-story` is not repairable by any command and must not be
