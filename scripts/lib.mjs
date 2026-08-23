@@ -303,7 +303,16 @@ export function loadLayout(name) {
   if (!existsSync(p)) {
     throw new Error(`Layout not found: ${name} (expected at ${p})`);
   }
-  return JSON.parse(readFileSync(p, "utf8"));
+  const layout = JSON.parse(readFileSync(p, "utf8"));
+  // The strings sidecar is addressed by layout name, and three call sites used
+  // to derive it independently — `layout.name` here, `layout.name || cfg.layout`
+  // in doctor. docs/extending.md never asks a custom layout for a `name:` key,
+  // so one written without it resolved its sidecar to nothing on the render path
+  // and to the right file on the check path: every folder scaffolded with the
+  // bare kind, and BOTH checks stayed silent about it. Stamped once, here, so
+  // the three cannot disagree.
+  if (!layout.name) layout.name = String(name);
+  return layout;
 }
 
 export function folderByKind(layout, kind) {
@@ -390,17 +399,26 @@ export function loadLayoutStrings(layoutName) {
 // Contract 2 — bound language, then en, then (for `purpose` only) the kind.
 // An unresolvable `not_this` yields null, which renders NO section: falling
 // back to the kind there would state a boundary the layout never drew.
+// THE definition of "this id resolves", exported so the render path and both
+// doctor checks cannot drift apart on it. They did: a guard written as bare
+// truthiness let every value shape that is truthy-but-unusable — a bare string
+// instead of an object, `{}`, `{"en":"   "}`, an object with no entry for the
+// bound language and no `en` — walk past it and reproduce the defect the guard
+// was added to close. `Object.hasOwn`, not `in`: `strings` comes from
+// JSON.parse, so `strings.constructor` is truthy and names no id at all.
+export function resolveLayoutString(strings, id, lang) {
+  if (!id || !strings || !Object.hasOwn(strings, id)) return null;
+  const entry = strings[id];
+  if (!entry || typeof entry !== "object") return null;
+  const v = entry[lang] ?? entry.en;
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
 export function folderStrings(layout, folder, lang) {
   const strings = loadLayoutStrings(layout && layout.name);
-  const pick = (id) => {
-    const entry = id ? strings[id] : null;
-    if (!entry || typeof entry !== "object") return null;
-    const v = entry[lang] ?? entry.en;
-    return typeof v === "string" && v.trim() ? v.trim() : null;
-  };
   return {
-    purpose: pick(folder.purpose) || String(folder.kind),
-    notThis: pick(folder.not_this),
+    purpose: resolveLayoutString(strings, folder.purpose, lang) || String(folder.kind),
+    notThis: resolveLayoutString(strings, folder.not_this, lang),
   };
 }
 
@@ -425,15 +443,17 @@ export const PURPOSE_MARKER =
 export function renderFolderReadme(layout, folder, lang) {
   const { purpose, notThis } = folderStrings(layout, folder, lang);
   const heading = loadStrings(lang).folder_not_this_heading;
-  const out = renderTemplate(loadTemplate(lang, "folder-readme"), {
+  // The placeholder sits flush against `## Index` in the templates and carries
+  // its own trailing blank line, so a layout that declares no `not_this`
+  // substitutes "" and the heading simply follows the preamble. Sweeping the
+  // rendered file with /\n{3,}/ would have done the same job while silently
+  // reformatting a third-party template or a sidecar string that meant its own
+  // blank lines.
+  return renderTemplate(loadTemplate(lang, "folder-readme"), {
     folder_name: folder.path,
     folder_description: `${PURPOSE_MARKER}\n${purpose}`,
-    folder_not_this: notThis ? `## ${heading}\n\n${notThis}\n` : "",
+    folder_not_this: notThis ? `## ${heading}\n\n${notThis}\n\n` : "",
   });
-  // A layout that declares no `not_this` substitutes "" into a line of its own,
-  // which would leave a triple newline before `## Index`. Deterministic either
-  // way, but only one of the two is a file anyone would have written by hand.
-  return out.replace(/\n{3,}/g, "\n\n");
 }
 
 // ─── Locale UI strings ─────────────────────────────────────────────────

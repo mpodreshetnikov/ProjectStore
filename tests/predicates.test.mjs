@@ -62,6 +62,7 @@ import {
   bundledLocales,
   PURPOSE_MARKER,
   FALLBACK_STRINGS,
+  resolveLayoutString,
 } from "../scripts/lib.mjs";
 import {
   checkLayoutTemplates,
@@ -2215,6 +2216,88 @@ test("SPEC-PS-10 contract 7: the layout purpose outranks the kind as fallback", 
     "Own prose.", "prose still wins over the fallback");
 });
 
+// ─── SPEC-PS-10 layout string registry ─────────────────────────────────
+
+test("FALLBACK_STRINGS agrees with templates/en/strings.json on every key it shares", () => {
+  // The hoist out of statusline.mjs was meant to be behaviour-preserving and
+  // silently dropped the `⚠` from statusline_state_error. The difference only
+  // shows when strings.json is unreadable — exactly when a warning glyph earns
+  // its keep — so no existing test could see it. This one can.
+  const en = JSON.parse(readFileSync(
+    fileURLToPath(new URL("../templates/en/strings.json", import.meta.url)), "utf8"));
+  for (const [k, v] of Object.entries(FALLBACK_STRINGS)) {
+    if (k in en) {
+      assert.equal(v, en[k], `FALLBACK_STRINGS.${k} has drifted from templates/en/strings.json`);
+    }
+  }
+  assert.ok(FALLBACK_STRINGS.statusline_state_error.startsWith("⚠"));
+  // And the other direction, which is the one that actually recurs: a key added
+  // to strings.json and read by a script, absent here, renders `undefined` when
+  // the file is unreadable. locales.test.mjs pins the six locales to en, so they
+  // move together and only this map can lag behind.
+  for (const k of Object.keys(en)) {
+    assert.ok(k in FALLBACK_STRINGS,
+      `templates/en/strings.json has ${k} and FALLBACK_STRINGS does not — it renders undefined when that file cannot be read`);
+  }
+});
+
+
+test("resolveLayoutString: only an object carrying a non-blank string resolves", () => {
+  // THE definition of "this id resolves". It exists because the render path and
+  // the two doctor checks each grew their own, and a guard written as bare
+  // truthiness let four value shapes through that the other two rejected —
+  // reopening, for those shapes, the false-warning defect it was added to close.
+  const S = {
+    good: { en: "Notes.", ru: "Заметки." },
+    bare: "Notes.",
+    empty: {},
+    blank: { en: "   " },
+    onlyFr: { fr: "Notes." },
+    nul: null,
+  };
+  assert.equal(resolveLayoutString(S, "good", "en"), "Notes.");
+  assert.equal(resolveLayoutString(S, "good", "ru"), "Заметки.");
+  assert.equal(resolveLayoutString(S, "good", "de"), "Notes.", "unknown language falls back to en");
+  for (const id of ["bare", "empty", "blank", "nul", "missing"]) {
+    assert.equal(resolveLayoutString(S, id, "en"), null, `${id} must not resolve`);
+  }
+  assert.equal(resolveLayoutString(S, "onlyFr", "fr"), "Notes.");
+  assert.equal(resolveLayoutString(S, "onlyFr", "en"), null, "no entry and no en is unresolved");
+  // `strings` comes from JSON.parse, so `in` would say yes to inherited names.
+  assert.equal(resolveLayoutString(S, "constructor", "en"), null);
+  assert.equal(resolveLayoutString(S, "toString", "en"), null);
+  assert.equal(resolveLayoutString(null, "good", "en"), null);
+  assert.equal(resolveLayoutString(S, null, "en"), null);
+});
+
+test("loadLayout stamps `name`, so the sidecar resolves the same way everywhere", () => {
+  // docs/extending.md never asks a custom layout for a `name:` key. Without this
+  // stamp, folderStrings looked the sidecar up under undefined while the doctor
+  // checks looked it up under cfg.layout: every folder scaffolded with the bare
+  // kind and BOTH checks stayed silent — the one degradation they exist to catch.
+  const layout = loadLayout("engineering");
+  assert.equal(layout.name, "engineering");
+  const anonymous = { ...layout };
+  delete anonymous.name;
+  assert.equal(folderStrings(anonymous, layout.folders[0], "en").purpose,
+    layout.folders[0].kind,
+    "sanity: an unnamed layout resolves nothing — which is why loadLayout stamps it");
+});
+
+test("renderFolderReadme: a layout with no boundary leaves no blank-line run", () => {
+  // The per-locale assertion in locales.test.mjs cannot reach this: all eight
+  // engineering folders declare `not_this`, so it renders the populated branch
+  // every time and passes unchanged on the unfixed code.
+  const layout = loadLayout("engineering");
+  const bare = { ...layout.folders.find((f) => f.path === "adr") };
+  delete bare.not_this;
+  const out = renderFolderReadme(layout, bare, "en");
+  assert.ok(!/\n{3,}/.test(out), "empty boundary substitution left a blank-line run");
+  assert.ok(!out.includes(`## ${loadStrings("en").folder_not_this_heading}`),
+    "no declaration must render no section");
+  assert.match(out, /were\.\n\n## Index\n/, "the index heading follows the preamble directly");
+});
+
 // ─── SPEC-PS-10 contract 8: folder purpose & boundary drift ────────────
 
 function mkPurposeVault() {
@@ -2310,21 +2393,6 @@ test("checkFolderPurpose: an unresolvable purpose id is the INSTALL check's find
   for (const f of layout.folders) f.purpose = `${f.purpose}_typo`;
   assert.deepEqual(checkFolderPurpose(cfg, layout), [],
     "a dead purpose id must produce no folder-purpose finding — checkLayoutTemplates reports it");
-});
-
-test("FALLBACK_STRINGS agrees with templates/en/strings.json on every key it shares", () => {
-  // The hoist out of statusline.mjs was meant to be behaviour-preserving and
-  // silently dropped the `⚠` from statusline_state_error. The difference only
-  // shows when strings.json is unreadable — exactly when a warning glyph earns
-  // its keep — so no existing test could see it. This one can.
-  const en = JSON.parse(readFileSync(
-    fileURLToPath(new URL("../templates/en/strings.json", import.meta.url)), "utf8"));
-  for (const [k, v] of Object.entries(FALLBACK_STRINGS)) {
-    if (k in en) {
-      assert.equal(v, en[k], `FALLBACK_STRINGS.${k} has drifted from templates/en/strings.json`);
-    }
-  }
-  assert.ok(FALLBACK_STRINGS.statusline_state_error.startsWith("⚠"));
 });
 
 test("checkFolderPurpose: a folder whose layout declares no boundary needs no section", () => {

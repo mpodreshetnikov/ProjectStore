@@ -64,6 +64,7 @@ import {
   folderPurpose,
   folderStrings,
   loadLayoutStrings,
+  resolveLayoutString,
   loadStrings,
   PURPOSE_MARKER,
 } from "./lib.mjs";
@@ -197,11 +198,7 @@ export function checkLayoutTemplates(cfg) {
   // README must stay creatable), not the report.
   const layoutName = layout.name || cfg.layout;
   const strings = loadLayoutStrings(layoutName);
-  const usable = (id) => {
-    const e = id ? strings[id] : null;
-    return Boolean(e && typeof e === "object" && typeof (e[lang] ?? e.en) === "string"
-      && String(e[lang] ?? e.en).trim());
-  };
+  const usable = (id) => resolveLayoutString(strings, id, lang) !== null;
   if (Object.keys(strings).filter((k) => !k.startsWith("_")).length === 0) {
     out.push(finding("install", "issue", "templates",
       `scaffold/layouts/${layoutName}.strings.json is missing or empty — every folder's stated purpose falls back to its bare kind. Stale/corrupt plugin install?`));
@@ -805,19 +802,12 @@ function sectionBodyOf(text, heading) {
 export function checkFolderPurpose(cfg, layout) {
   const out = [];
   const strings = loadLayoutStrings(layout.name || cfg.layout);
-  // NIT: derived once, not once per folder — it is a readdir plus a stat per
-  // bundled locale, and unlike its two neighbours it carries no cache.
+  // Derived once, not once per folder: it is a readdir plus a stat per bundled
+  // locale, and unlike its two neighbours it carries no cache.
   const locales = bundledLocales();
   for (const folder of layout.folders) {
     if (folder.readme !== true) continue;
-    // A folder whose purpose id does not resolve is checkLayoutTemplates'
-    // finding, not this one. Without this guard a missing or broken sidecar
-    // makes the expected render degrade to the bare kind, so every correctly
-    // scaffolded README "matches in no bundled language" and gets blamed for a
-    // fault in the install — while the message offers to delete the marker,
-    // which would permanently opt that folder out of a check that was working.
-    // A transient install fault must not become silent, irreversible drift.
-    if (!folder.purpose || !strings[folder.purpose]) continue;
+
     const readmePath = join(cfg.vault_path, folder.path, "README.md");
     if (!existsSync(readmePath)) continue; // a missing README is checkIndexes' business
     let actual;
@@ -832,6 +822,16 @@ export function checkFolderPurpose(cfg, layout) {
     let explained = false;
     let judged = false;
     for (const lang of locales) {
+      // A locale whose purpose id does not resolve would render the bare kind
+      // as its own expectation, so comparing a README against it proves
+      // nothing — and, before this skip existed, disagreed with every correctly
+      // scaffolded README and blamed the file for a fault in the install, while
+      // offering to delete the marker: a transient broken sidecar turned into
+      // permanent, irreversible unmanagement of a folder that was never wrong.
+      // An unresolvable id is checkLayoutTemplates' finding, and it shares this
+      // module's definition of "resolves" so the two cannot disagree about
+      // which shapes count.
+      if (!resolveLayoutString(strings, folder.purpose, lang)) continue;
       let expected, heading, notThis;
       try {
         expected = renderFolderReadme(layout, folder, lang);
@@ -845,8 +845,9 @@ export function checkFolderPurpose(cfg, layout) {
       const samePurpose =
         folderPurpose(actual, folder.kind) === folderPurpose(expected, folder.kind);
       if (samePurpose) purposeMatched = true;
-      // want == null means this layout declares no boundary for the folder, and
-      // then a README with no such section is correct, not incomplete.
+      // want == null means this layout declares no boundary for the folder — or
+      // declares one whose id is dead, which checkLayoutTemplates reports. Either
+      // way a README with no such section is correct here, not incomplete.
       const want = sectionBodyOf(expected, heading);
       const sameBoundary = want == null || sectionBodyOf(actual, heading) === want;
       if (samePurpose && sameBoundary) { explained = true; break; }
