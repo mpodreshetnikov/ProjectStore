@@ -2098,6 +2098,109 @@ test("SPEC-PS-10 contract 6: an HTML comment is chrome, not purpose prose", () =
     "<!-- oops Real.", "an unterminated comment stays literal");
 });
 
+test("SPEC-PS-10 contract 7: the SKELETON uses the fallback, not just folderPurpose", () => {
+  // The unit above proves folderPurpose can take a fallback. This proves the one
+  // production caller passes it — without this the parameter is reachable only
+  // from tests, and the degradation cases it exists for (README missing, empty,
+  // unreadable, or still unread when the 200 ms budget expires — all of which
+  // leave `readme` null) keep rendering the bare kind.
+  const out = renderVaultSkeleton(factsFor({
+    folders: [
+      { path: "adr", kind: "adr", counts: { artifacts: 0 }, readme: null,
+        purpose: "Architectural decisions." },
+      { path: "ops", kind: "runbook", counts: { artifacts: 0 }, readme: "",
+        purpose: "Operational procedures." },
+      { path: "specs", kind: "spec", counts: { artifacts: 0 },
+        readme: "# specs\n\nIts own prose.\n\n## Index\n", purpose: "Layout text." },
+    ],
+  }));
+  assert.match(out, /\| Architectural decisions\. \|/, "a missing README renders the layout purpose");
+  assert.match(out, /\| Operational procedures\. \|/, "an empty README renders the layout purpose");
+  assert.match(out, /\| Its own prose\. \|/, "a README with prose still outranks the layout");
+  assert.ok(!/\| adr \|\s*$/m.test(out), "the bare kind must no longer reach the Purpose cell");
+});
+
+test("SPEC-PS-10 contract 7: gatherVaultFacts resolves each folder's purpose", async () => {
+  // The renderer is pure, so the resolution has to happen in the gather — this
+  // pins that it does, and that it follows the BOUND language.
+  const vault = mkdtempSync(join(tmpdir(), "ps-facts-"));
+  for (const f of loadLayout("engineering").folders) mkdirSync(join(vault, f.path), { recursive: true });
+  const facts = await gatherVaultFacts(
+    { vault_path: vault, layout: "engineering", language: "ru" }, { source: "startup" });
+  for (const f of facts.folders) {
+    assert.ok(f.purpose, `${f.path}: no purpose carried into the facts`);
+    assert.notEqual(f.purpose, f.kind, `${f.path}: purpose is the bare kind`);
+  }
+  assert.equal(facts.folders.find((f) => f.path === "adr").purpose,
+    folderStrings(loadLayout("engineering"),
+      loadLayout("engineering").folders.find((f) => f.path === "adr"), "ru").purpose,
+    "the gather must resolve in the bound language, not en");
+});
+
+// A throwaway plugin root, so a BROKEN layout can be checked without shipping
+// one. pluginRoot() reads CLAUDE_PLUGIN_ROOT at call time, but loadLayoutStrings
+// caches by layout name, so this runs in a fresh process rather than in-band.
+const DOCTOR = fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url));
+const HEADINGS = fileURLToPath(new URL("../scaffold/headings.json", import.meta.url));
+
+function checkLayoutIn(root, layout) {
+  const src = `
+    process.env.CLAUDE_PLUGIN_ROOT = ${JSON.stringify(root)};
+    const { checkLayoutTemplates } = await import(${JSON.stringify(DOCTOR)});
+    process.stdout.write(JSON.stringify(
+      checkLayoutTemplates({ layout: ${JSON.stringify(layout)}, language: "en" })));
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+function fakePluginRoot(strings) {
+  const root = mkdtempSync(join(tmpdir(), "ps-root-"));
+  mkdirSync(join(root, "scaffold", "layouts"), { recursive: true });
+  mkdirSync(join(root, "templates", "en"), { recursive: true });
+  copyFileSync(HEADINGS, join(root, "scaffold", "headings.json"));
+  writeFileSync(join(root, "scaffold", "layouts", "tiny.json"), JSON.stringify({
+    name: "tiny",
+    folders: [{ path: "notes", kind: "note", readme: true,
+      purpose: "folder_purpose_note", not_this: "folder_not_this_note" }],
+    commands: ["note"],
+  }));
+  writeFileSync(join(root, "scaffold", "layouts", "tiny.strings.json"), JSON.stringify(strings));
+  writeFileSync(join(root, "templates", "en", "note.md.tmpl"), "# {{title}}\n");
+  writeFileSync(join(root, "templates", "en", "folder-readme.md.tmpl"), "# {{folder_name}}\n");
+  return root;
+}
+
+test("checkLayoutTemplates: every id the layout REFERENCES must resolve, not just some key", () => {
+  const good = { folder_purpose_note: { en: "Notes." }, folder_not_this_note: { en: "Not notes." } };
+  assert.deepEqual(checkLayoutIn(fakePluginRoot(good), "tiny"), [],
+    "a fully resolvable sidecar is clean");
+
+  // The case a "does the file have any key?" test waves through: the sidecar
+  // exists and is non-empty, but the id the layout names is misspelled. Those
+  // folders scaffold with their bare kind, and checkFolderPurpose cannot catch
+  // it — its expected render resolves through the SAME fallback, so it compares
+  // the wrong text against itself and calls the result clean.
+  const typo = { folder_purpose_notes: { en: "Notes." }, folder_not_this_note: { en: "Not notes." } };
+  const out = checkLayoutIn(fakePluginRoot(typo), "tiny");
+  assert.equal(out.length, 1, JSON.stringify(out));
+  assert.equal(out[0].level, "issue");
+  assert.match(out[0].message, /notes\.purpose → folder_purpose_note/);
+
+  const partial = { folder_purpose_note: { en: "Notes." } };
+  const out2 = checkLayoutIn(fakePluginRoot(partial), "tiny");
+  assert.equal(out2.length, 1, JSON.stringify(out2));
+  assert.match(out2[0].message, /notes\.not_this → folder_not_this_note/);
+
+  const blank = { folder_purpose_note: { en: "   " }, folder_not_this_note: { en: "Not notes." } };
+  assert.equal(checkLayoutIn(fakePluginRoot(blank), "tiny").length, 1,
+    "a whitespace-only string resolves to nothing and must report like a missing one");
+
+  assert.equal(checkLayoutIn(fakePluginRoot({}), "tiny").length, 1,
+    "an empty sidecar still reports, as before");
+});
+
 test("SPEC-PS-10 contract 7: the layout purpose outranks the kind as fallback", () => {
   assert.equal(folderPurpose("## Index\n", "adr", "Architectural decisions."),
     "Architectural decisions.", "no preamble → the layout's purpose, not the tautology");
@@ -2446,8 +2549,13 @@ test("gather contract 13: an unresolvable read expires the budget and every fami
   const out = renderVaultSkeleton(facts);
   assert.ok(/not resolved within budget/.test(out));
   assert.ok(!/nothing in progress/.test(out));
-  // And the purposes degrade to the folder kind (contract 6), never to blanks.
-  assert.ok(/\| `adr\/` \| adr \| \d+ \| adr \|/.test(out), out.split("\n").find((l) => l.startsWith("| `adr/`")));
+  // And the purposes degrade to the LAYOUT's stated purpose (contract 7), never
+  // to blanks and no longer to the bare kind: an expired read is exactly the
+  // degradation the fallback was added for, so this is where it has to show.
+  const timedOut = out.split("\n").find((l) => l.startsWith("| `adr/`"));
+  const adrLayout = loadLayout("engineering");
+  const adrWant = folderStrings(adrLayout, adrLayout.folders.find((f) => f.kind === "adr"), "en").purpose;
+  assert.ok(timedOut.endsWith(`| ${adrWant} |`), timedOut);
 });
 
 test("gather contract 13: a family that finished before expiry keeps its result", async () => {
@@ -2540,14 +2648,23 @@ test("gather contracts 5, 15: counts are per folder and in-flight is newest-star
   assert.equal(facts.inFlight.status, "ok");
 });
 
-test("gather contract 6: a folder purpose falls back to its kind, never to a blank cell", async () => {
+test("gather contracts 6, 7: no preamble falls back to the LAYOUT purpose, never to a blank cell", async () => {
+  // This assertion used to expect the bare kind — `research` meaning "research".
+  // SPEC-PS-10 contract 7 puts the layout's own purpose ahead of the kind, and
+  // this is one of the two places that proves the fallback reaches production
+  // rather than living only in folderPurpose's unit tests.
   const vault = mkVault({ readmes: { research: "## Index\n\n| File |\n" } });
   const facts = await gatherVaultFacts(cfgFor(vault), {
     source: "startup", budgetMs: 2000, readFile: (p) => readFileSync(p, "utf8"),
   });
   const out = renderVaultSkeleton(facts);
-  assert.ok(/\| `research\/` \| research \| \d+ \| research \|/.test(out),
-    "a README that opens with `## ` has no preamble to quote");
+  const layout = loadLayout("engineering");
+  const want = folderStrings(layout, layout.folders.find((f) => f.kind === "research"), "en").purpose;
+  const row = out.split("\n").find((l) => l.startsWith("| `research/`"));
+  assert.ok(row.endsWith(`| ${want} |`),
+    `a README that opens with \`## \` has no preamble to quote, so the layout answers: ${row}`);
+  assert.ok(!/\| `research\/` \| research \| \d+ \| research \|/.test(out),
+    "the bare kind is no longer the answer");
 });
 
 // ── Review follow-ups (second pass) ───────────────────────────────────

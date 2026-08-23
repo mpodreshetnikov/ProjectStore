@@ -195,11 +195,34 @@ export function checkLayoutTemplates(cfg) {
   // `issue`, like a missing template, because both mean a broken or stale
   // install; contract 2's graceful degradation governs the RENDER (a folder
   // README must stay creatable), not the report.
-  const ids = Object.keys(loadLayoutStrings(layout.name || cfg.layout))
-    .filter((k) => !k.startsWith("_"));
-  if (ids.length === 0) {
+  const layoutName = layout.name || cfg.layout;
+  const strings = loadLayoutStrings(layoutName);
+  const usable = (id) => {
+    const e = id ? strings[id] : null;
+    return Boolean(e && typeof e === "object" && typeof (e[lang] ?? e.en) === "string"
+      && String(e[lang] ?? e.en).trim());
+  };
+  if (Object.keys(strings).filter((k) => !k.startsWith("_")).length === 0) {
     out.push(finding("install", "issue", "templates",
-      `scaffold/layouts/${layout.name || cfg.layout}.strings.json is missing or empty — every folder's stated purpose falls back to its bare kind. Stale/corrupt plugin install?`));
+      `scaffold/layouts/${layoutName}.strings.json is missing or empty — every folder's stated purpose falls back to its bare kind. Stale/corrupt plugin install?`));
+  } else {
+    // Every id the layout REFERENCES, not merely "the file has some key". A
+    // typo'd or stale id degrades exactly like a missing sidecar — the folder
+    // scaffolds with its bare kind — and checkFolderPurpose cannot see it,
+    // because its expected render resolves through the same fallback and
+    // therefore matches the wrong text it is comparing against.
+    const dead = [];
+    for (const folder of layout.folders) {
+      if (!folder.purpose) dead.push(`${folder.path}: no purpose declared`);
+      else if (!usable(folder.purpose)) dead.push(`${folder.path}.purpose → ${folder.purpose}`);
+      if (folder.not_this && !usable(folder.not_this)) {
+        dead.push(`${folder.path}.not_this → ${folder.not_this}`);
+      }
+    }
+    if (dead.length) {
+      out.push(finding("install", "issue", "templates",
+        `scaffold/layouts/${layoutName}.strings.json does not resolve every id the layout references (${dead.join("; ")}) — those folders scaffold with their bare kind, and the folder-purpose check cannot see it.`));
+    }
   }
   return out;
 }

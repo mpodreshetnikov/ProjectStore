@@ -1276,6 +1276,13 @@ export async function gatherVaultFacts(cfg, opts = {}) {
     kind: f.kind,
     counts: countFolder(vault, f),
     readme: null, // a read that lands fills this; contract 6 covers the rest
+    // SPEC-PS-10 contract 7 — resolved HERE, in the gather, because this is the
+    // one degradation path that matters: a README that is missing, empty, or
+    // still unread when the 200 ms budget expires leaves `readme` null, and the
+    // cell would otherwise render the bare kind. Resolving it in the renderer
+    // instead would put a filesystem read behind a function contracted to be
+    // pure. It is a cached lookup, not a read.
+    purpose: folderStrings(layout, f, cfg.language || "en").purpose,
   }));
 
   const storyFiles = listVaultStoryFiles(vault);
@@ -1418,7 +1425,7 @@ export function renderVaultSkeleton(facts) {
   for (const folder of f.folders || []) {
     L.push(
       `| \`${folder.path}/\` | ${folder.kind} | ${renderCount(folder.counts)} | ` +
-        `${folderPurpose(folder.readme, folder.kind)} |`,
+        `${folderPurpose(folder.readme, folder.kind, folder.purpose)} |`,
     );
   }
   L.push("");
