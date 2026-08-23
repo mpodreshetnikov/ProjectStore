@@ -840,15 +840,21 @@ export function checkFolderPurpose(cfg, layout) {
       } catch {
         continue; // total per contract 8: one unreadable locale degrades itself only
       }
-      judged = true;
       if (notThis) declaresBoundary = true;
+      // `want == null` used to mean two different things, and conflating them
+      // opened a hole: "the layout declares no boundary for this folder" and
+      // "this locale's folder-readme template cannot render one". In the second
+      // case the locale cannot judge the boundary at all — yet it would report
+      // the file fully explained, so a deliberately deleted `## Not this` read
+      // as clean whenever ANY locale shared the folder's purpose text and had a
+      // template missing the placeholder. Aliased locale strings, which a team
+      // that did not translate its layout will have, make that ordinary.
+      const want = sectionBodyOf(expected, heading);
+      if (notThis && want == null) continue; // unusable locale, not a satisfied one
+      judged = true;
       const samePurpose =
         folderPurpose(actual, folder.kind) === folderPurpose(expected, folder.kind);
       if (samePurpose) purposeMatched = true;
-      // want == null means this layout declares no boundary for the folder — or
-      // declares one whose id is dead, which checkLayoutTemplates reports. Either
-      // way a README with no such section is correct here, not incomplete.
-      const want = sectionBodyOf(expected, heading);
       const sameBoundary = want == null || sectionBodyOf(actual, heading) === want;
       if (samePurpose && sameBoundary) { explained = true; break; }
     }

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, copyFileSync, cpSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -2374,6 +2374,51 @@ test("checkFolderPurpose: unmarked and absent READMEs are not ours to lint", () 
   assert.deepEqual(checkFolderPurpose(c2, l2), [],
     "a missing README is checkIndexes' business, not this check's");
   assert.ok(existsSync(empty));
+});
+
+test("checkFolderPurpose: a locale whose template cannot render the section may not vouch for it", () => {
+  // `want == null` conflated "the layout declares no boundary" with "this
+  // locale's folder-readme template has no {{folder_not_this}} placeholder".
+  // The second is an unusable judge, not a satisfied one — and treating it as
+  // satisfied let a deliberately deleted `## Not this` read as clean whenever
+  // any locale shared the folder's purpose text, which is the normal case for a
+  // layout whose sidecar was not translated.
+  const root = mkdtempSync(join(tmpdir(), "ps-weak-"));
+  cpSync(fileURLToPath(new URL("../scaffold", import.meta.url)), join(root, "scaffold"), { recursive: true });
+  cpSync(fileURLToPath(new URL("../templates", import.meta.url)), join(root, "templates"), { recursive: true });
+  const tpl = join(root, "templates", "de", "folder-readme.md.tmpl");
+  writeFileSync(tpl, readFileSync(tpl, "utf8").replace("{{folder_not_this}}", ""));
+  const sc = join(root, "scaffold", "layouts", "engineering.strings.json");
+  const strings = JSON.parse(readFileSync(sc, "utf8"));
+  for (const v of Object.values(strings)) {
+    if (v && typeof v === "object" && v.en) v.de = v.en; // untranslated layout
+  }
+  writeFileSync(sc, JSON.stringify(strings));
+
+  const vault = mkdtempSync(join(tmpdir(), "ps-weakv-"));
+  const src = `
+    process.env.CLAUDE_PLUGIN_ROOT = ${JSON.stringify(root)};
+    const fs = await import("node:fs"), path = await import("node:path");
+    const lib = await import(${JSON.stringify(fileURLToPath(new URL("../scripts/lib.mjs", import.meta.url)))});
+    const doc = await import(${JSON.stringify(fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url)))});
+    const vault = ${JSON.stringify(vault)};
+    const layout = lib.loadLayout("engineering");
+    for (const f of layout.folders) {
+      fs.mkdirSync(path.join(vault, f.path), { recursive: true });
+      fs.writeFileSync(path.join(vault, f.path, "README.md"), lib.renderFolderReadme(layout, f, "en"));
+    }
+    const cfg = { vault_path: vault, layout: "engineering" };
+    const clean = doc.checkFolderPurpose(cfg, layout).length;
+    const p = path.join(vault, "research", "README.md");
+    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(/## Not this[\\s\\S]*?\\n## Index/, "## Index"));
+    process.stdout.write(JSON.stringify({ clean, deleted: doc.checkFolderPurpose(cfg, layout).length }));
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.clean, 0, "a correctly scaffolded vault must stay clean");
+  assert.equal(out.deleted, 1,
+    "a deleted boundary section was vouched for by a locale whose template cannot render one");
 });
 
 test("checkFolderPurpose: an unresolvable purpose id is the INSTALL check's finding, not this one", () => {
