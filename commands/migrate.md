@@ -24,7 +24,9 @@ Steps:
    ```
 
    The JSON is `{ vault, write: false, migrations: [{ id, since, title, why,
-   pending: [{ rel, path, lang, before, after }], skipped: [{ rel, reason }] }] }`.
+   pending: [{ rel, path, lang, sha, before, after }], skipped: [{ rel, reason }] }] }`.
+   **Keep each `sha`** — step 7 passes them back, and they are what ties the
+   write to the bytes the user actually looked at.
 
 3. **If every `pending` array is empty**: say so in one line — "nothing pending;
    this vault matches the plugin" — list any `skipped` entries with their
@@ -55,15 +57,20 @@ Steps:
 7. **Apply**:
 
    ```bash
-   node "$CLAUDE_PLUGIN_ROOT/scripts/migrate.mjs" --write [--only …]
+   node "$CLAUDE_PLUGIN_ROOT/scripts/migrate.mjs" --write [--only …] \
+     --expect "<rel>=<sha>" [--expect "<rel>=<sha>" …]
    ```
 
-   Every write goes through the core's atomic replace, and each file is
-   re-checked against your preview immediately before it lands. A `conflict`
-   entry means another session changed that file underneath you in the region
-   the migration owns: report it, do not retry blindly, and offer to re-run
-   step 2 so the user approves a fresh preview. The command exits nonzero when
-   anything conflicted or errored.
+   Pass one `--expect` per file you previewed, with the `sha` from step 2.
+   Without them the write is a second, independent read: everything that
+   changed while the user was reading and deciding would be invisible, and that
+   window is the whole reason this command has a gate. Every write goes through
+   the core's atomic replace, and the previous contents are archived first.
+
+   A `conflict` entry means that file changed after the preview the user
+   approved. Report it, do not retry blindly, and offer to re-run step 2 so they
+   approve a fresh one. The command exits nonzero when anything conflicted or
+   errored.
 
 8. **Report**: which files changed, which were skipped and why, and where the
    pre-images went. Then suggest `/projectstore:doctor` to confirm the vault is
@@ -74,11 +81,22 @@ Steps:
 If the user wants to keep their own wording for a folder, there are two ways and
 they mean different things:
 
-- **Keep this preamble, permanently** — change the word `managed` to `mine` on
-  the `<!-- projectstore:purpose … -->` line in that README. The doctor stops
-  linting it and every future migration leaves it alone.
-- **Stop offering this migration for this file** — 
-  `node "$CLAUDE_PLUGIN_ROOT/scripts/migrate.mjs" --decline <id>:<rel>`. Use
-  this for a file the migration reports as `skipped`, which has nowhere to carry
-  a marker. It records the path under
-  `<vault>/.projectstore/migrations/<id>/declined`; deleting that line undoes it.
+`node "$CLAUDE_PLUGIN_ROOT/scripts/migrate.mjs" --decline <id>:<rel>` — or the
+equivalent by hand: change the word `managed` to `mine` on the
+`<!-- projectstore:purpose … -->` line of that README.
+
+Both do the same thing, because the decline is written **into the file**. The
+vault travels with the repo, so a decline recorded only on this machine would be
+invisible to whoever clones it next and migrates the file away. The doctor stops
+linting a `mine` preamble and every future migration leaves it alone; changing
+the word back to `managed` un-declines it.
+
+**The marker line must stay in the file.** Removing it altogether leaves a
+README indistinguishable from one in a vault nobody has brought forward, so the
+next run offers to replace exactly the wording its owner wanted to keep. Change
+the word; do not remove the line.
+
+The one exception is a target the plan reports as `skipped` — it has nowhere to
+put a marker, so `--decline` falls back to recording the path under
+`<vault>/.projectstore/migrations/<id>/declined`. That record is machine-local;
+say so when you use it.

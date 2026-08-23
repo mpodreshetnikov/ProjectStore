@@ -870,11 +870,11 @@ export function checkFolderPurpose(cfg, layout) {
 
     if (!purposeMatched) {
       out.push(finding("vault", "warn", "folder-purpose",
-        `${folder.path}/README.md is marked as layout-managed but its preamble matches the layout's stated purpose in no bundled language — the folder's purpose has drifted from scaffold/layouts/${layout.name || cfg.layout}.json, and the drifted text is what SessionStart injects as this folder's purpose (delete the projectstore:purpose marker line to keep your own wording).`,
+        `${folder.path}/README.md is marked as layout-managed but its preamble matches the layout's stated purpose in no bundled language — the folder's purpose has drifted from scaffold/layouts/${layout.name || cfg.layout}.json, and the drifted text is what SessionStart injects as this folder's purpose (to keep your own wording, change "managed" to "mine" on the projectstore:purpose line).`,
         `${folder.path}/README.md`));
     } else if (declaresBoundary) {
       out.push(finding("vault", "warn", "folder-purpose",
-        `${folder.path}/README.md is marked as layout-managed but its boundary section does not match the layout's \`not_this\` text in any bundled language — the rule that says what does NOT belong in ${folder.path}/ was removed or rewritten (delete the projectstore:purpose marker line to keep your own wording).`,
+        `${folder.path}/README.md is marked as layout-managed but its boundary section does not match the layout's \`not_this\` text in any bundled language — the rule that says what does NOT belong in ${folder.path}/ was removed or rewritten (to keep your own wording, change "managed" to "mine" on the projectstore:purpose line).`,
         `${folder.path}/README.md`));
     }
   }

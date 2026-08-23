@@ -116,9 +116,17 @@ Return a `{ skip: reason }` rather than throwing when you meet a shape you do
 not recognize: a skipped target is reported once and never counted as pending,
 which is what keeps an unfixable file from becoming a permanent warning.
 
-`kind` is `"modify"`. `create` and `delete` are rejected when the registry
-loads — no entry exercises them, and an unexercised write path is worse than an
+`kind` is `"modify"`. Declare the kinds you emit up front — `kinds: ["modify"]`
+on the entry — because that list is validated when the registry LOADS: an
+unsupported kind is then an error its author sees once, rather than a throw at
+plan time that reaches every user as a permanent doctor warning and a nonzero
+exit on every otherwise-successful run. `create` and `delete` are not supported
+yet: no entry exercises them, and an unexercised write path is worse than an
 absent one. Add one together with the tests that cover it.
+
+A malformed target degrades to a `skipped` line rather than throwing, so one bad
+entry cannot discard its siblings — that is contract 8, and it is why the shape
+check is per target instead of a `.map` that can abort the whole plan.
 
 ## Adding a new layout
 

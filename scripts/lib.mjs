@@ -426,15 +426,16 @@ export function folderStrings(layout, folder, lang) {
 // only the READMEs this code wrote. A vault scaffolded before SPEC-PS-10 has
 // model-written prose and no marker: unmanaged, and therefore silent, instead
 // of permanently warned at with no remedy on offer. It says what it is because
-// deleting it is the supported way to keep your own wording, and an opt-out
-// nobody can see is not an opt-out.
+// changing "managed" to "mine" is the supported way to keep your own wording,
+// and an opt-out nobody can see is not an opt-out.
 // Two states, because absence has to keep meaning "nobody has decided yet".
 // `managed` — the preamble comes from the layout, and doctor lints it.
 // `mine`    — the user owns the wording; nothing here touches it again.
 // The opt-out is editing one word rather than deleting the line: a deleted line
 // is indistinguishable from a vault that was never brought forward, which would
 // make /projectstore:migrate re-offer to overwrite exactly the wording its owner
-// just asked to keep.
+// just asked to keep. Nothing anywhere may tell a user to delete it — there is a
+// guard test over scripts/, commands/, docs/ and README.md for that sentence.
 export const PURPOSE_STATES = ["managed", "mine"];
 const PURPOSE_MARKER_RE = /<!--\s*projectstore:purpose\s+(managed|mine)\b[^>]*-->/;
 
@@ -1189,8 +1190,15 @@ export function ensureMigrationsDir(vault, id = null) {
     ? join(vault, ".projectstore", "migrations", id)
     : join(vault, ".projectstore", "migrations");
   mkdirSync(dir, { recursive: true });
-  if (!existsSync(gi)) {
-    writeFileSync(gi, "# projectstore — runtime data, do not commit\n*\n", "utf8");
+  // Ensure the `*` line is actually there rather than assuming any existing
+  // file implies it: a narrower .projectstore/.gitignore written by something
+  // else would otherwise let these pre-images — user prose — into git.
+  let current = "";
+  try { current = existsSync(gi) ? readFileSync(gi, "utf8") : ""; } catch { current = ""; }
+  if (!/^\*$/m.test(current)) {
+    writeFileSync(gi, current
+      ? `${current.replace(/\n*$/, "")}\n*\n`
+      : "# projectstore — runtime data, do not commit\n*\n", "utf8");
   }
   return dir;
 }

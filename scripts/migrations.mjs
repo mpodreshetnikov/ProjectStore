@@ -29,6 +29,7 @@
 
 import { join } from "node:path";
 import {
+  loadTemplate,
   renderFolderReadme,
   findManagedIndex,
   purposeMarkerState,
@@ -39,27 +40,32 @@ import {
 // not of the reader's config. A teammate bound to `en` migrating a `ru` vault
 // must not staple an English preamble above `## Индекс`.
 function readmeLanguage(before, layout, folder, fallback) {
-  const found = findManagedIndex(before);
-  if (found.unusable || found.sectionStart == null) return fallback;
-  const heading = found.lines[found.sectionStart].trim();
-  const matches = [];
+  // The index heading alone does not identify a language — `## Index` is the
+  // form in de, en AND fr — so a heading lookup hands whichever binding the
+  // READER happens to have to a vault written in another. Score each locale by
+  // how much of its folder-readme template is literally present instead: the
+  // footer and the index comment differ in all six, which separates the three
+  // that share a heading. The binding only breaks ties.
+  const text = String(before ?? "");
+  let best = fallback;
+  let bestScore = -1;
   for (const lang of bundledLocales()) {
-    let rendered;
+    let tpl;
     try {
-      rendered = findManagedIndex(renderFolderReadme(layout, folder, lang));
+      tpl = loadTemplate(lang, "folder-readme");
     } catch {
       continue;
     }
-    if (rendered.unusable || rendered.sectionStart == null) continue;
-    if (rendered.lines[rendered.sectionStart].trim() === heading) matches.push(lang);
+    let score = 0;
+    for (const line of tpl.split("\n")) {
+      const t = line.trim();
+      if (!t || t.includes("{{")) continue;
+      if (text.includes(t)) score += 1;
+    }
+    if (lang === fallback) score += 0.5;
+    if (score > bestScore) { bestScore = score; best = lang; }
   }
-  // The heading alone does not identify a language: `## Index` is the form in
-  // de, en AND fr. Without this tie-break the sorted locale list decides, and
-  // an English vault gets a German boundary section stapled into it — measured,
-  // not hypothesised. The bound language wins whenever it is among the
-  // candidates; only a genuinely foreign heading overrides it.
-  if (matches.includes(fallback)) return fallback;
-  return matches[0] || fallback;
+  return best;
 }
 
 // Everything the layout renders above the index heading, then the original
@@ -109,14 +115,21 @@ export const MIGRATIONS = [
         const path = join(ctx.vault, folder.path, "README.md");
         const before = ctx.read(path);
         if (before == null) continue;
-        // `managed` — already brought forward. `mine` — the owner said so.
-        if (purposeMarkerState(before)) continue;
+        // `mine` — the owner claimed this wording; never plan over it.
+        if (purposeMarkerState(before) === "mine") continue;
         const lang = readmeLanguage(before, ctx.layout, folder, ctx.lang);
         const after = spliceFolderReadme(before, ctx.layout, folder, lang);
         if (after && after.skip) {
           out.push({ rel, path, skipped: after.skip });
           continue;
         }
+        // Convergence on layout state, NOT presence of the marker this same
+        // migration plants. Detecting its own stamp would make the marker an
+        // "applied" record wearing a comment's clothes — and would leave a
+        // `managed` README whose preamble drifted permanently warned at by
+        // doctor with no repair path, which is the steady state of every vault
+        // a year from now.
+        if (after === before) continue;
         out.push({
           rel,
           path,
@@ -134,6 +147,8 @@ export const MIGRATIONS = [
 // `create` and `delete` are both rejected: neither is exercised by any entry,
 // and an unexercised write path is worse than an absent one. The first entry
 // that needs one adds it together with its tests.
+export const SUPPORTED_KINDS = ["modify"];
+
 export function assertRegistryShape(list = MIGRATIONS) {
   const seen = new Set();
   for (const m of list) {
@@ -142,17 +157,34 @@ export function assertRegistryShape(list = MIGRATIONS) {
     seen.add(m.id);
     if (typeof m.plan !== "function") throw new Error(`${m.id}: plan is not a function`);
     if (typeof m.since !== "string") throw new Error(`${m.id}: since is not a string`);
+    // Declared up front, so an unsupported kind is a load-time error the author
+    // sees once — not a per-invocation throw that reaches users as a permanent
+    // doctor warning and a nonzero exit on every otherwise-successful run.
+    for (const k of m.kinds || ["modify"]) {
+      if (!SUPPORTED_KINDS.includes(k)) {
+        throw new Error(`${m.id}: unsupported change kind "${k}" — supported: ${SUPPORTED_KINDS.join(", ")}`);
+      }
+    }
   }
   return list;
 }
 
-export function assertChangeShape(id, entry) {
+// Per TARGET, and it degrades that target rather than throwing: contract 8 says
+// siblings still apply, and a throw from inside a .map over the plan discards
+// every one of them.
+export function checkChangeShape(id, entry) {
+  if (!entry || typeof entry.rel !== "string" || !entry.rel) {
+    return { rel: String(entry && entry.rel), skipped: `${id}: change without a rel` };
+  }
+  if (entry.rel.startsWith("/") || entry.rel.split(/[/\\]/).includes("..")) {
+    return { rel: entry.rel, skipped: `${id}: rel must be vault-relative and contain no ".."` };
+  }
   if (entry.skipped) return entry;
-  if (entry.kind !== "modify") {
-    throw new Error(`${id}: unsupported change kind "${entry.kind}" — only "modify" exists`);
+  if (!SUPPORTED_KINDS.includes(entry.kind)) {
+    return { rel: entry.rel, skipped: `unsupported change kind "${entry.kind}" — supported: ${SUPPORTED_KINDS.join(", ")}` };
   }
   if (typeof entry.transform !== "function") {
-    throw new Error(`${id}: change for ${entry.rel} carries no transform`);
+    return { rel: entry.rel, skipped: `${id}: change for ${entry.rel} carries no transform` };
   }
   return entry;
 }

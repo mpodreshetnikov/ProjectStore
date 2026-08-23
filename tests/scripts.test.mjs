@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import * as migrationsModule from "../scripts/migrations.mjs";
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const ENV = { ...process.env, CLAUDE_PROJECT_DIR: REPO, CLAUDE_PLUGIN_ROOT: REPO };
@@ -792,9 +793,13 @@ test("migrate --write: the pre-image is archived, git-ignored, and equals the or
   const { proj, vault } = seedOldVault();
   const original = readFileSync(join(vault, "research", "README.md"), "utf8");
   runIn(proj, "migrate.mjs", ["--write"]);
-  const pre = join(vault, ".projectstore", "migrations", "folder-readme-purpose", "research__README.md");
-  assert.ok(existsSync(pre), "no pre-image — the only undo that always exists");
-  assert.equal(readFileSync(pre, "utf8"), original);
+  const dir = join(vault, ".projectstore", "migrations", "folder-readme-purpose");
+  // Content-addressed: a second run must never clobber the pre-image the first
+  // one took, because that copy is the only remaining record of the wording
+  // being replaced.
+  const pre = readdirSync(dir).filter((n) => n.startsWith("research__README.md."));
+  assert.equal(pre.length, 1, `expected one pre-image, got ${JSON.stringify(readdirSync(dir))}`);
+  assert.equal(readFileSync(join(dir, pre[0]), "utf8"), original);
   // The `*` ignore under .projectstore/ is otherwise written only when a
   // SessionStart hook has fired, so pre-images would land in git without this.
   assert.match(readFileSync(join(vault, ".projectstore", ".gitignore"), "utf8"), /^\*$/m);
@@ -818,11 +823,23 @@ test("migrate --only and --decline narrow to one target", () => {
   assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /projectstore:purpose managed/);
   assert.match(readFileSync(join(vault, "specs", "README.md"), "utf8"), /Model-written prose for specs/);
 
-  runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:specs/README.md"]);
+  // Declining writes the mark INTO the file. The vault travels with the repo, so
+  // a decline recorded only under a git-ignored directory is invisible to the
+  // teammate who clones it next and migrates the file away.
+  const declined = runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:specs/README.md"]);
+  assert.equal(declined.how, "mine-marker");
+  assert.match(readFileSync(join(vault, "specs", "README.md"), "utf8"), /projectstore:purpose mine/);
   const out = runIn(proj, "migrate.mjs", []);
-  const m = out.migrations[0];
-  assert.ok(!m.pending.some((p) => p.rel === "specs/README.md"), "a declined target is not offered");
-  assert.ok(m.skipped.some((sk) => sk.rel === "specs/README.md" && sk.reason === "declined"));
+  assert.ok(!out.migrations[0].pending.some((p) => p.rel === "specs/README.md"),
+    "a declined target is not offered again");
+
+  // And an unmatched target must die loudly rather than reporting success on
+  // changes the user approved and that silently did not happen.
+  const bad = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--write", "--only", "folder-readme-purpose:nope/README.md"],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  assert.notEqual(bad.status, 0, "an unmatched --only target must not exit 0");
+  assert.match(bad.stderr, /is not a target of/);
 });
 
 test("migrate: a `mine` marker is never a target", () => {
@@ -889,6 +906,106 @@ test("migrate: concurrent edits do not conflict for a transform whose output ign
   assert.match(conflicted.conflict, /changed under us/);
   assert.match(readFileSync(join(vault, "epics", "README.md"), "utf8"), /later edit/,
     "a conflicted file must be left exactly as the other writer left it");
+});
+
+test("migrate: declining a file that already converged is the commonest case", () => {
+  // Declining is forward-looking. Requiring the target to be pending RIGHT NOW
+  // makes the main case — "this file is fine, keep my wording from here on" —
+  // impossible, which is what my first attempt at validating the selector did.
+  const { proj, vault } = seedOldVault();
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.deepEqual(runIn(proj, "migrate.mjs", []).migrations[0].pending, [], "sanity: converged");
+
+  const declined = runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:specs/README.md"]);
+  assert.equal(declined.how, "mine-marker");
+  const p = join(vault, "specs", "README.md");
+  writeFileSync(p, readFileSync(p, "utf8").replace(/^The normative how[^\n]*$/m, "MY WORDING."));
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.match(readFileSync(p, "utf8"), /MY WORDING\./,
+    "a declined file must survive every later migration, including the drift repair");
+
+  // …and a typo must still be loud, since a silently recorded decline leaves
+  // the user believing they opted out while the real file stays in play.
+  const bad = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--decline", "folder-readme-purpose:nope/README.md"],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /does not exist in the vault/);
+});
+
+test("migrate: --expect binds the write to the bytes the human approved", () => {
+  // The preview is printed by one process and the write happens in another, so
+  // the window between "here is what will change" and "yes" is invisible to the
+  // runner unless the caller carries the hash it showed. That window is the
+  // entire reason a gated command exists.
+  const { proj, vault } = seedOldVault();
+  const plan = runIn(proj, "migrate.mjs", []);
+  const target = plan.migrations[0].pending.find((e) => e.rel === "adr/README.md");
+  assert.ok(target.sha, "the plan must publish a hash for each target");
+
+  writeFileSync(join(vault, "adr", "README.md"), "# adr\n\nSomeone rewrote this while you were reading.\n\n## Index\n\n" + OLD_TABLE);
+  const r = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--write", "--expect", `adr/README.md=${target.sha}`],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  const out = JSON.parse(r.stdout);
+  const adr = out.migrations[0].results.find((x) => x.rel === "adr/README.md");
+  assert.equal(adr.applied, false);
+  assert.match(adr.conflict, /changed after the preview you approved/);
+  assert.notEqual(r.status, 0, "a conflict must exit nonzero");
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Someone rewrote this/,
+    "the other writer's content must survive untouched");
+});
+
+test("migrate: a `managed` README that drifted is repaired, not ignored", () => {
+  // Detection is convergence on layout state, not presence of the marker this
+  // migration itself plants. Detecting its own stamp would make the marker an
+  // applied-record in a comment's clothing — and would leave a drifted README
+  // permanently warned at by doctor with no repair path anywhere.
+  const { proj, vault } = seedOldVault();
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const p = join(vault, "specs", "README.md");
+  writeFileSync(p, readFileSync(p, "utf8")
+    .replace(/^The normative how[^\n]*$/m, "Someone retyped this by hand."));
+  assert.equal(runIn(proj, "doctor.mjs", ["--json"])
+    .filter((f) => f.check === "folder-purpose").length, 1, "sanity: doctor sees the drift");
+
+  const plan = runIn(proj, "migrate.mjs", []);
+  assert.ok(plan.migrations[0].pending.some((e) => e.rel === "specs/README.md"),
+    "the drifted file must be offered for repair");
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.deepEqual(runIn(proj, "doctor.mjs", ["--json"]).filter((f) => f.check === "folder-purpose"), []);
+});
+
+test("registry: an unsupported change kind is a load-time error, not a per-run one", () => {
+  const { assertRegistryShape, SUPPORTED_KINDS } = migrationsModule;
+  assert.deepEqual(SUPPORTED_KINDS, ["modify"]);
+  assert.throws(() => assertRegistryShape([{ id: "x", since: "1.0.0", plan: () => [], kinds: ["create"] }]),
+    /unsupported change kind "create"/,
+    "an unsupported kind must fail the author once, not every user on every doctor run");
+  assert.doesNotThrow(() => assertRegistryShape());
+});
+
+test("nothing anywhere tells a user to DELETE the purpose marker", () => {
+  // Deleting it is indistinguishable from a vault nobody has migrated, so the
+  // instruction is a data-loss loop: migrate re-targets the file and replaces
+  // the very wording its owner kept. This guard exists because three places
+  // still said it after the marker gained its second state.
+  const roots = ["scripts", "commands", "docs"];
+  const files = roots.flatMap((r) => readdirSync(join(REPO, r), { recursive: true })
+    .map((n) => join(REPO, r, String(n)))
+    .filter((f) => /\.(mjs|md|json)$/.test(f)));
+  files.push(join(REPO, "README.md"));
+  for (const f of files) {
+    const src = readFileSync(f, "utf8").replace(/\s+/g, " ");
+    // The harmful shape is the INSTRUCTION — "delete … to keep your own
+    // wording" — not the word "delete" near the word "marker". A guard that
+    // cannot tell a prohibition from an instruction fires on the sentence
+    // warning against the thing, which is how a guard gets deleted instead of
+    // obeyed.
+    assert.doesNotMatch(src, /delet\w*[^.]{0,80}marker[^.]{0,60}to keep your own wording/i,
+      `${f} still instructs the user to delete the marker to keep their wording`);
+    assert.doesNotMatch(src, /delete this line to keep your own wording/i, f);
+  }
 });
 
 test("doctor: pending migrations warn, unmigratable ones inform, a migrated vault says nothing", () => {
