@@ -81,6 +81,45 @@ register a form per bundled language (en, ru, es, de, fr, zh) in
 `scaffold/headings.json` — matchers accept every registered language, so a
 ru-headed file lints in an en-bound vault.
 
+## Adding a migration
+
+A migration brings an **existing** vault forward. `scaffold` only writes files
+that do not exist, so anything that changes an already-created file needs one.
+The registry is `scripts/migrations.mjs`; the runner is `scripts/migrate.mjs`
+and `/projectstore:migrate`.
+
+An entry is `{ id, since, title, why, plan(ctx) }`. Two rules decide whether
+yours belongs there at all:
+
+1. **It must detect its own completion from vault state.** Nothing records
+   "applied": after your migration runs there must be nothing left for `plan` to
+   return. That is what makes the mechanism work for a vault three releases
+   behind, a vault already current, and a vault someone fixed by hand — with no
+   bookkeeping to fall out of step. If you cannot tell whether your change is
+   already in place, you do not have a migration; you have a script.
+2. **`plan` must be total against any vault state.** Never assume an earlier
+   migration ran: `--only` and per-target declines both make that false.
+
+`plan(ctx)` receives `{ vault, project, plugin, layout, vaultCfg, lang, read }`
+— `read(path)` is memoized for the invocation, so twenty entries read the vault
+once. It returns one entry per target:
+
+```jsonc
+{ "rel": "adr/README.md", "path": "…", "kind": "modify",
+  "before": "<bytes on disk>", "transform": "(bytes) => bytes | { skip }" }
+{ "rel": "ops/README.md", "skipped": "no recognised index-table header" }
+```
+
+`transform` must be pure — the runner re-runs it against the file at write time
+and applies the result only if it still matches the preview the user approved.
+Return a `{ skip: reason }` rather than throwing when you meet a shape you do
+not recognize: a skipped target is reported once and never counted as pending,
+which is what keeps an unfixable file from becoming a permanent warning.
+
+`kind` is `"modify"`. `create` and `delete` are rejected when the registry
+loads — no entry exercises them, and an unexercised write path is worse than an
+absent one. Add one together with the tests that cover it.
+
 ## Adding a new layout
 
 A layout is a JSON file at `scaffold/layouts/<name>.json` declaring folders,

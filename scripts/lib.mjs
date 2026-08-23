@@ -428,8 +428,29 @@ export function folderStrings(layout, folder, lang) {
 // of permanently warned at with no remedy on offer. It says what it is because
 // deleting it is the supported way to keep your own wording, and an opt-out
 // nobody can see is not an opt-out.
-export const PURPOSE_MARKER =
-  "<!-- projectstore:purpose — managed by the layout; delete this line to keep your own wording -->";
+// Two states, because absence has to keep meaning "nobody has decided yet".
+// `managed` — the preamble comes from the layout, and doctor lints it.
+// `mine`    — the user owns the wording; nothing here touches it again.
+// The opt-out is editing one word rather than deleting the line: a deleted line
+// is indistinguishable from a vault that was never brought forward, which would
+// make /projectstore:migrate re-offer to overwrite exactly the wording its owner
+// just asked to keep.
+export const PURPOSE_STATES = ["managed", "mine"];
+const PURPOSE_MARKER_RE = /<!--\s*projectstore:purpose\s+(managed|mine)\b[^>]*-->/;
+
+export function purposeMarker(state = "managed") {
+  return state === "mine"
+    ? "<!-- projectstore:purpose mine — your wording; projectstore leaves this preamble alone -->"
+    : "<!-- projectstore:purpose managed — this preamble comes from the layout;"
+      + " change \"managed\" to \"mine\" on this line to keep your own wording -->";
+}
+
+export function purposeMarkerState(text) {
+  const m = PURPOSE_MARKER_RE.exec(String(text ?? ""));
+  return m ? m[1] : null;
+}
+
+export const PURPOSE_MARKER = purposeMarker("managed");
 
 // Contract 3 — composition lives HERE, not in commands/scaffold.md. Prose
 // cannot be tested, and byte-identical preambles across two independently
@@ -1131,6 +1152,47 @@ export function resolveLinkTarget(rawTarget, linkType, ctx) {
     if (ring2.length > 1) return { outcome: "out-of-scope" };
   }
   return { outcome: "dead" };
+}
+
+// ─── The managed index table (SPEC-PS-11 contract 9) ──────────────────
+//
+// ONE locator, shared by reconcile's rebuildIndexRows and by anything that has
+// to splice around the table. Two consumers deriving "which table is managed"
+// separately is how one of them ends up rewriting a region the other owns.
+//
+// The rules are reconcile's, unchanged: the FIRST header row any bundled
+// language recognizes, and only when a well-formed separator follows it.
+// `sectionStart` is the nearest preceding `## ` line, or null — a bare table
+// with no heading above it is perfectly usable to reconcile, which needs no
+// heading, and unusable to a caller that needs a section boundary to cut at.
+export function findManagedIndex(text) {
+  const lines = String(text ?? "").split("\n");
+  const re = indexHeaderRe();
+  const headIdx = lines.findIndex((l) => re.test(l));
+  if (headIdx === -1) return { unusable: "no recognised index-table header" };
+  if (!/^\|[-\s|]+\|$/.test(lines[headIdx + 1] || "")) {
+    return { unusable: "malformed separator row under the index header" };
+  }
+  let sectionStart = headIdx;
+  while (sectionStart >= 0 && !/^## /.test(lines[sectionStart])) sectionStart--;
+  return { lines, headIdx, sectionStart: sectionStart < 0 ? null : sectionStart };
+}
+
+// <vault>/.projectstore/migrations/<id> — pre-images of everything a migration
+// replaces. Created WITH its ignore file unconditionally, mirroring
+// ensureRuntimeDir: the `*` ignore under .projectstore/ is otherwise written
+// only by ensureSessionsDir, so a vault whose SessionStart hook has never fired
+// does not have one and these pre-images would land in the next commit.
+export function ensureMigrationsDir(vault, id = null) {
+  const gi = join(vault, ".projectstore", ".gitignore");
+  const dir = id
+    ? join(vault, ".projectstore", "migrations", id)
+    : join(vault, ".projectstore", "migrations");
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(gi)) {
+    writeFileSync(gi, "# projectstore — runtime data, do not commit\n*\n", "utf8");
+  }
+  return dir;
 }
 
 // ─── Vault navigation skeleton ────────────────────────────────────────

@@ -61,6 +61,9 @@ import {
   renderFolderReadme,
   bundledLocales,
   PURPOSE_MARKER,
+  purposeMarker,
+  purposeMarkerState,
+  findManagedIndex,
   FALLBACK_STRINGS,
   resolveLayoutString,
 } from "../scripts/lib.mjs";
@@ -2214,6 +2217,49 @@ test("SPEC-PS-10 contract 7: the layout purpose outranks the kind as fallback", 
     "the fallback is escaped for the cell like prose is");
   assert.equal(folderPurpose("# T\n\nOwn prose.\n\n## Index\n", "adr", "Layout."),
     "Own prose.", "prose still wins over the fallback");
+});
+
+// ─── SPEC-PS-11: the shared index locator and the two-state marker ─────
+
+test("findManagedIndex: one locator, agreeing with reconcile on every branch", () => {
+  const table = "| File | Title | Status | Date |\n|------|-------|--------|------|\n";
+  const ok = findManagedIndex(`# adr\n\nProse.\n\n## Index\n\n${table}| [a](./a.md) | A | draft | 2026-01-01 |\n`);
+  assert.equal(ok.unusable, undefined);
+  assert.equal(ok.lines[ok.sectionStart], "## Index");
+
+  assert.match(findManagedIndex("# adr\n\nNo table at all.\n").unusable,
+    /no recognised index-table header/);
+  // v0.22 anchored the header regex end-to-end so reconcile could not destroy a
+  // hand-added column. That anchor is why a real vault has unmigratable files.
+  assert.match(findManagedIndex(`## Index\n\n| File | Title | Status | Date | Owner |\n|--|--|--|--|--|\n`).unusable,
+    /no recognised index-table header/);
+  assert.match(findManagedIndex(`## Index\n\n${table.split("\n")[0]}\nnot a separator\n`).unusable,
+    /malformed separator row/);
+
+  // A bare table with no heading above it is legal to reconcile, which needs no
+  // heading — and unspliceable for a caller that needs a section boundary.
+  const bare = findManagedIndex(`# adr\n\nProse.\n\n${table}`);
+  assert.equal(bare.unusable, undefined);
+  assert.equal(bare.sectionStart, null);
+
+  // Two table-shaped regions: the FIRST wins, as reconcile's findIndex does.
+  const two = findManagedIndex(`## Index\n\n${table}\n## Other\n\n${table}`);
+  assert.equal(two.headIdx, 2);
+  assert.equal(two.lines[two.sectionStart], "## Index");
+});
+
+test("the purpose marker has two states, and absence is neither", () => {
+  assert.equal(purposeMarkerState(purposeMarker("managed")), "managed");
+  assert.equal(purposeMarkerState(purposeMarker("mine")), "mine");
+  assert.equal(purposeMarkerState("# adr\n\nplain prose\n"), null,
+    "absence must stay distinguishable from a decision");
+  assert.equal(purposeMarkerState(PURPOSE_MARKER), "managed",
+    "the exported default is the managed line");
+  // The opt-out is editing one word, so the managed line has to say so — an
+  // instruction to DELETE it would make the opt-out indistinguishable from a
+  // vault nobody has migrated yet, and re-offer to overwrite the wording.
+  assert.match(purposeMarker("managed"), /change "managed" to "mine"/);
+  assert.doesNotMatch(purposeMarker("managed"), /delete this line/);
 });
 
 // ─── SPEC-PS-10 layout string registry ─────────────────────────────────

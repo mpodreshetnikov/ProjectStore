@@ -67,8 +67,10 @@ import {
   resolveLayoutString,
   loadStrings,
   PURPOSE_MARKER,
+  purposeMarkerState,
 } from "./lib.mjs";
 import { uncommittedProjectFiles, lastCommitMs } from "./diff-refs.mjs";
+import { planAll, buildMigrationContext } from "./migrate.mjs";
 
 const AGENT_BLOCK_MARKER = /<!--\s*projectstore:agents v(\d+)/g;
 // v3 adds the entry rule and the instruction-conflict clause. checkAgentsBlock
@@ -812,7 +814,10 @@ export function checkFolderPurpose(cfg, layout) {
     if (!existsSync(readmePath)) continue; // a missing README is checkIndexes' business
     let actual;
     try { actual = readFileSync(readmePath, "utf8"); } catch { continue; }
-    if (!actual.includes(PURPOSE_MARKER)) continue; // hand-written: not ours to lint
+    // Only `managed`. A `mine` marker is the user saying the wording is theirs,
+    // and an absent marker is a vault nobody has brought forward yet — neither
+    // is drift, and neither is this check's business.
+    if (purposeMarkerState(actual) !== "managed") continue;
 
     // Clean iff SOME bundled locale explains the file completely. Accumulating
     // "purpose matched in de, boundary matched in fr" would call a genuinely
@@ -871,6 +876,50 @@ export function checkFolderPurpose(cfg, layout) {
       out.push(finding("vault", "warn", "folder-purpose",
         `${folder.path}/README.md is marked as layout-managed but its boundary section does not match the layout's \`not_this\` text in any bundled language — the rule that says what does NOT belong in ${folder.path}/ was removed or rewritten (delete the projectstore:purpose marker line to keep your own wording).`,
         `${folder.path}/README.md`));
+    }
+  }
+  return out;
+}
+
+// ─── Pending vault migrations (SPEC-PS-11 contract 14) ────────────────
+//
+// Reports; never repairs. `warn`, not `info`: runStartupChecks never runs vault
+// checks at all (ADR-005 Decision 4), so `info` would protect SessionStart's
+// counter from nothing — what it WOULD do is render the line under a group
+// header reading "0 issue(s), 0 warning(s)", which is how a mechanism for
+// updating existing vaults reaches nobody.
+//
+// Three target states, and only one of them is a warning. A `skipped` target —
+// a README whose table carries a hand-added column, say, which indexHeaderRe
+// deliberately refuses to match — has no fix available, so counting it would be
+// an unclearable nag; dropping it would leave a half-migrated vault with no
+// signal anywhere. It gets one `info` line and no count.
+export function checkMigrations(cfg, layout, vaultCfg = null) {
+  const out = [];
+  let report;
+  try {
+    const ctx = buildMigrationContext(cfg);
+    if (vaultCfg) ctx.vaultCfg = vaultCfg; // read once, by the caller
+    ctx.layout = layout;
+    report = planAll(ctx);
+  } catch (e) {
+    return [finding("vault", "warn", "migrations",
+      `pending migrations could not be computed: ${e && e.message ? e.message : String(e)}`)];
+  }
+  for (const m of report) {
+    if (m.error) {
+      out.push(finding("vault", "warn", "migrations",
+        `migration "${m.id}" could not plan: ${m.error}`));
+      continue;
+    }
+    if (m.pending.length) {
+      out.push(finding("vault", "warn", "migrations",
+        `${m.pending.length} file(s) can be brought forward by migration "${m.id}" (${m.title}, since v${m.since}) — preview and apply with /projectstore:migrate.`));
+    }
+    const notDeclined = m.skipped.filter((sk) => sk.reason !== "declined");
+    if (notDeclined.length) {
+      out.push(finding("vault", "info", "migrations",
+        `migration "${m.id}" cannot act on ${notDeclined.map((sk) => `${sk.rel} (${sk.reason})`).join("; ")} — nothing to do about these; decline them with /projectstore:migrate to stop listing them.`));
     }
   }
   return out;
@@ -1593,6 +1642,10 @@ export function runVaultChecks(cfg) {
     () => checkSpecCoverage(artifacts, vaultCfg, layout),
     () => checkSpecAcceptance(layout, artifacts, vaultCfg),
     () => checkLifecycleGates(artifacts, vaultCfg),
+    // Last: the guarded loop `break`s on the first throw, and a migration's
+    // plan is the most failure-prone thing in it — third-party registry entries
+    // included. Nothing behind it should pay for that.
+    () => checkMigrations(cfg, layout, vaultCfg),
   ];
   for (const step of guarded) {
     try { findings.push(...step()); } catch (e) {
