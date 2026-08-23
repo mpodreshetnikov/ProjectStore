@@ -8,6 +8,10 @@ You are managing a **spec** — the durable, normative "how" of a subsystem
 behavioral contracts, and its Acceptance is **additive** to the covered
 stories' own criteria. One spec covers one or more stories and outlives them.
 
+Not this: *why* this approach won is an ADR (`/projectstore:adr`) — a spec
+references it rather than re-arguing it. And a procedure you run against a live
+system is a runbook (`/projectstore:runbook`): a spec is design, not operations.
+
 Dispatch on the first argument:
 
 - `activate <SPEC-ID>` / `supersede <SPEC-ID>` → **Status transition flow**.

@@ -4,8 +4,8 @@
 
 Since v0.14 the kind machinery is layout-driven: `draft.mjs` builds ANY kind
 declared in the layout, and doctor's template check follows the layout instead
-of a hardcoded list. A new kind needs **five touch points** — note that **all
-five live inside the plugin installation**, not in your vault (there is no
+of a hardcoded list. A new kind needs **six touch points** — note that **all
+six live inside the plugin installation**, not in your vault (there is no
 vault-side layout or template override):
 
 1. **Layout folder entry** — `scaffold/layouts/<name>.json` → `folders`:
@@ -28,8 +28,10 @@ vault-side layout or template override):
 
 2. **Layout command entry** — the same file's `commands` array. A command
    needs a template only if it maps to a declared folder kind (`story` maps
-   through the `epic` folder; `kanban` through the `kanban` block). Folders
-   without a command (e.g. `diagrams`) need no template.
+   through the `epic` folder; `kanban` through the `kanban` block). A folder
+   without a command needs no template — but it is also a folder no supported
+   path can fill, which is what `diagrams` was until v0.25. If you declare a
+   folder, prefer giving it a command.
 
 3. **Template** — `templates/en/<kind>.md.tmpl` (and `templates/ru/…`).
    Variables filled by `scripts/draft.mjs`: `{{date}}`, `{{author}}`,
@@ -54,7 +56,24 @@ vault-side layout or template override):
    and gates every write behind AskUserQuestion. Copy `commands/research.md`
    for a plain kind, `commands/adr.md` for one that renders the draft's
    `collision`/`warnings` fields and updates an index, `commands/spec.md`
-   for one with status transitions.
+   for one with status transitions. Its role paragraph must also carry a
+   **`Not this:`** clause naming the adjacent kind and pointing at that
+   command — a kind whose boundary is not written down is a kind the model
+   will guess at, differently each session.
+
+6. **Folder purpose and boundary** — the folder entry's `purpose` and
+   `not_this` fields are string **ids**, and the text lives in
+   `scaffold/layouts/<layout>.strings.json`, keyed `id -> language -> text`.
+   Every bundled language needs an entry: a missing one falls back to `en`,
+   and a missing `purpose` falls back to the bare kind — `adr` meaning "adr",
+   which is what these fields exist to stop. `purpose` becomes the folder
+   README's preamble AND the folder's Purpose cell in the SessionStart
+   navigation skeleton, so keep it one sentence, comfortably under 160
+   characters once whitespace is collapsed. `not_this` becomes the README's
+   own boundary section and is not competing for that cell, so it can be
+   longer. Both are checked by doctor's `folder-purpose` check — but only on
+   READMEs carrying the `<!-- projectstore:purpose -->` marker that
+   `renderFolderReadme` emits, so a hand-written README is never linted.
 
 If the kind introduces **new section headings or inline keywords** that
 deterministic checks must recognize (doctor, reconcile, story-section),
@@ -68,6 +87,14 @@ A layout is a JSON file at `scaffold/layouts/<name>.json` declaring folders,
 kinds, commands, agents and (optionally) a kanban block — see
 `engineering.json` for the full shape. Every command that maps to a folder
 kind needs its template per the checklist above.
+
+A layout also ships its own strings sidecar, `scaffold/layouts/<name>.strings.json`,
+holding the `purpose` / `not_this` text its folders reference. It is a sidecar of
+the LAYOUT rather than of `templates/<lang>/strings.json` precisely so that a
+layout you add can carry its own folder meanings without editing bundled
+per-locale files that the next plugin upgrade overwrites. Doctor reports a
+missing or empty sidecar as an install issue, because without it every folder's
+stated purpose silently degrades to its bare kind.
 
 ## Adding a new command
 
@@ -106,9 +133,14 @@ Bundled: `en`, `ru`, `es`, `de`, `fr`, `zh`. To add another:
 Mirror `templates/en/` to `templates/<lang>/` and translate the bodies.
 Frontmatter keys **and their values** stay English (`status: planned` is
 machine-read; only prose and table labels get translated). Then register the
-language's heading/keyword/index-column forms in `scaffold/headings.json`, and
-add the locale to `LOCALES` in `tests/locales.test.mjs` so the suite actually
-runs over it. `templates/<lang>/strings.json` localizes the statusline only.
+language's heading/keyword/index-column forms in `scaffold/headings.json`.
+Nothing else is needed to be covered by the suite: `LOCALES` is derived from
+`templates/` (via `bundledLocales()` in `lib.mjs`), so creating the directory is
+enough to be held to every contract. `templates/<lang>/strings.json` localizes
+render-only chrome that no script parses back — the statusline's labels and the
+folder README's boundary heading — and every locale must carry the SAME key set
+as `en`; the suite asserts it. Folder purposes and boundary rules do NOT live
+there: they belong to the layout, in `scaffold/layouts/<layout>.strings.json`.
 
 Skipping the registry does not produce one clean error — it degrades *unevenly*,
 which is why the spec exists: an unregistered index header raises a doctor
@@ -154,9 +186,11 @@ and `story` are localized where the field localizes them (`ru` "Эпик", `es`
 `zh`). Nothing reads these table labels, so the only cost of getting it wrong
 is that the document reads like a translation.
 
-The bundled set is currently spelled out by hand in four places (the test's
-`LOCALES`, the registry's `_description`, this page, `commands/bind.md`) with
-nothing checking that they agree — see the PS-I18N epic's backlog.
+The bundled set used to be spelled out by hand in four places with nothing
+checking they agree. `bundledLocales()` in `lib.mjs` is now the one derivation,
+consumed by both the test suite and doctor's `folder-purpose` check; the
+remaining prose copies (the registry's `_description`, this page,
+`commands/bind.md`) are documentation, not behaviour.
 
 ## Vault-side policy
 

@@ -8,7 +8,9 @@
       "readme": true,
       "numbered": true,
       "prefix": "ADR-",
-      "pad": 3
+      "pad": 3,
+      "purpose": "folder_purpose_adr",
+      "not_this": "folder_not_this_adr"
     },
     {
       "path": "specs",
@@ -16,40 +18,54 @@
       "readme": true,
       "numbered": true,
       "prefix": "SPEC-",
-      "pad": 3
+      "pad": 3,
+      "purpose": "folder_purpose_spec",
+      "not_this": "folder_not_this_spec"
     },
     {
       "path": "epics",
       "kind": "epic",
       "readme": true,
       "subfolder_per_id": true,
-      "story_prefix": "story-"
+      "story_prefix": "story-",
+      "purpose": "folder_purpose_epic",
+      "not_this": "folder_not_this_epic"
     },
     {
       "path": "research",
       "kind": "research",
-      "readme": true
+      "readme": true,
+      "purpose": "folder_purpose_research",
+      "not_this": "folder_not_this_research"
     },
     {
       "path": "concepts",
       "kind": "concept",
-      "readme": true
+      "readme": true,
+      "purpose": "folder_purpose_concept",
+      "not_this": "folder_not_this_concept"
     },
     {
       "path": "meetings",
       "kind": "meeting",
       "readme": true,
-      "date_prefix": true
+      "date_prefix": true,
+      "purpose": "folder_purpose_meeting",
+      "not_this": "folder_not_this_meeting"
     },
     {
       "path": "ops",
       "kind": "runbook",
-      "readme": true
+      "readme": true,
+      "purpose": "folder_purpose_runbook",
+      "not_this": "folder_not_this_runbook"
     },
     {
       "path": "diagrams",
       "kind": "diagram",
-      "readme": true
+      "readme": true,
+      "purpose": "folder_purpose_diagram",
+      "not_this": "folder_not_this_diagram"
     }
   ],
   "commands": [
@@ -61,6 +77,7 @@
     "concept",
     "meeting",
     "runbook",
+    "diagram",
     "kanban"
   ],
   "agents": [

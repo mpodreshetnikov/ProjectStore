@@ -56,6 +56,7 @@ import {
   findSlugCollision,
   displayNumberOf,
   today,
+  renderFolderReadme,
 } from "./lib.mjs";
 
 function die(msg, code = 1) {
@@ -190,6 +191,29 @@ function buildStory(cfg, layout, args) {
   };
 }
 
+// SPEC-PS-10 contracts 3 and 13 — the folder READMEs of the whole layout,
+// rendered but not written. Their preamble and boundary rule are layout data
+// now, so composing them in commands/scaffold.md would put the two things
+// contracts 3 (byte-determinism) and 4 (the 160-char skeleton cell) pin back
+// into the one place nothing can test. `exists` is reported, not acted on:
+// scaffold writes only what is missing, and deciding that is the command's job.
+function buildFolderReadmes(cfg, layout) {
+  const lang = cfg.language || "en";
+  const entries = layout.folders
+    .filter((f) => f.readme === true)
+    .map((f) => {
+      const path = indexPath(cfg.vault_path, f.path);
+      return {
+        folder: f.path,
+        kind: f.kind,
+        path,
+        exists: existsSync(path),
+        content: renderFolderReadme(layout, f, lang),
+      };
+    });
+  return { kind: "folder-readmes", language: lang, entries };
+}
+
 function buildSimple(kind, cfg, layout, args) {
   const title = args.join(" ").trim();
   if (!title) die(`${kind} requires a title`);
@@ -230,7 +254,11 @@ function buildSimple(kind, cfg, layout, args) {
 
 function main() {
   const argv = process.argv.slice(2);
-  if (argv.length < 2) die("usage: draft.mjs <kind> <args...>");
+  // `folder-readmes` renders the whole layout and so takes no arguments; every
+  // other kind needs at least a title.
+  if (argv.length < 1 || (argv.length < 2 && argv[0] !== "folder-readmes")) {
+    die("usage: draft.mjs <kind> <args...> | draft.mjs folder-readmes");
+  }
   const kind = argv[0];
   const rest = argv.slice(1);
 
@@ -239,7 +267,9 @@ function main() {
   const layout = loadLayout(cfg.layout);
 
   let result;
-  if (kind === "epic") {
+  if (kind === "folder-readmes") {
+    result = buildFolderReadmes(cfg, layout);
+  } else if (kind === "epic") {
     result = buildEpic(cfg, layout, rest);
   } else if (kind === "story") {
     result = buildStory(cfg, layout, rest);

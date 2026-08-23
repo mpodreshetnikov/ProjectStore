@@ -24,6 +24,14 @@ import {
   storiesAttributionRe,
   loadHeadingsRegistry,
   parseFrontmatter,
+  bundledLocales,
+  folderStrings,
+  folderPurpose,
+  renderFolderReadme,
+  loadLayout,
+  loadStrings,
+  PURPOSE_CELL,
+  PURPOSE_MARKER,
 } from "../scripts/lib.mjs";
 import { checkLayoutTemplates } from "../scripts/doctor.mjs";
 
@@ -35,13 +43,15 @@ const ENV = { ...process.env, CLAUDE_PLUGIN_ROOT: REPO };
 // drop a locale from it and the sweep silently stops covering that locale while
 // staying green. Deriving it means adding templates/<lang>/ is enough to be held to
 // every contract.
-const LOCALES = readdirSync(join(REPO, "templates"))
-  .filter((d) => statSync(join(REPO, "templates", d)).isDirectory())
-  .sort();
+//
+// SPEC-PS-10 contract 9: the derivation now lives in lib.mjs, because doctor needs
+// the same set and a second copy of a list nobody checks is how the four copies
+// docs/extending.md complains about came to exist. Imported, not recomputed.
+const LOCALES = bundledLocales();
 
 // Kinds the engineering layout declares a command for, plus folder-readme.
-const KINDS = ["adr", "concept", "epic", "folder-readme", "kanban", "meeting",
-  "research", "runbook", "spec", "story"];
+const KINDS = ["adr", "concept", "diagram", "epic", "folder-readme", "kanban",
+  "meeting", "research", "runbook", "spec", "story"];
 
 const VARS = {
   id: "ADR-001", title: "T", date: "2026-01-01", author: "A", tags: "[]",
@@ -167,6 +177,67 @@ for (const lang of LOCALES) {
     assert.ok(existsSync(p), "strings.json missing");
     const s = JSON.parse(readFileSync(p, "utf8"));
     for (const k of STATUSLINE_KEYS) assert.ok(s[k], `strings.json missing ${k}`);
+    // Key-set parity, not merely "the four I remembered". A locale that silently
+    // lacks a key renders the en fallback, which reads as a translation gap
+    // nobody sees rather than a failure anybody fixes.
+    assert.deepEqual(Object.keys(s).sort(),
+      Object.keys(JSON.parse(readFileSync(join(REPO, "templates", "en", "strings.json"), "utf8"))).sort(),
+      `${lang}/strings.json key set differs from en`);
+  });
+
+  // ─── SPEC-PS-10: folder purpose and boundaries are layout data ───────
+  test(`locale ${lang}: every layout string id resolves (SPEC-PS-10 contracts 1, 2)`, () => {
+    const layout = loadLayout("engineering");
+    for (const folder of layout.folders) {
+      assert.ok(folder.purpose, `${folder.path}: layout declares no purpose id`);
+      const { purpose, notThis } = folderStrings(layout, folder, lang);
+      // Resolving to the kind IS the tautology this whole registry retires, so
+      // "non-empty" is not the assertion — "not the fallback" is.
+      assert.notEqual(purpose, folder.kind,
+        `${folder.path}: purpose fell back to the bare kind in ${lang} — id "${folder.purpose}" is unresolved`);
+      if (folder.not_this) {
+        assert.ok(notThis,
+          `${folder.path}: layout declares not_this "${folder.not_this}" but it does not resolve in ${lang}`);
+      }
+    }
+  });
+
+  test(`locale ${lang}: folder README renders deterministically and marked (SPEC-PS-10 contracts 3, 8, 10)`, () => {
+    const layout = loadLayout("engineering");
+    // renderTemplate substitutes an unknown {{x}} with "", so a missing variable
+    // leaves no {{ behind and `!/\{\{/` proves nothing here. Assert the positive.
+    const tpl = loadTemplate(lang, "folder-readme");
+    for (const v of ["{{folder_name}}", "{{folder_description}}", "{{folder_not_this}}"]) {
+      assert.ok(tpl.includes(v), `folder-readme template is missing ${v}`);
+    }
+    assert.ok(!tpl.includes("projectstore:purpose"),
+      "the marker must be emitted by renderFolderReadme, not sit in the template: a third-party template would otherwise lose it and make every folder silently unmanaged");
+    for (const folder of layout.folders) {
+      const once = renderFolderReadme(layout, folder, lang);
+      assert.equal(once, renderFolderReadme(layout, folder, lang),
+        `${folder.path}: two renders differ — re-scaffolding would not reproduce`);
+      assert.ok(once.includes(PURPOSE_MARKER), `${folder.path}: rendered README carries no marker`);
+      if (folder.not_this) {
+        assert.match(once, new RegExp(`^## ${escapeRe(loadStrings(lang).folder_not_this_heading)}$`, "m"),
+          `${folder.path}: no localized boundary section`);
+      }
+    }
+  });
+
+  test(`locale ${lang}: the purpose reaches the skeleton cell untruncated (SPEC-PS-10 contract 4)`, () => {
+    const layout = loadLayout("engineering");
+    for (const folder of layout.folders) {
+      const cell = folderPurpose(renderFolderReadme(layout, folder, lang), folder.kind);
+      const want = folderStrings(layout, folder, lang).purpose.replace(/\s+/g, " ").trim();
+      // Equality, not `length <= PURPOSE_CELL`: truncEnd returns EXACTLY
+      // PURPOSE_CELL on overflow, so a length assertion passes vacuously on the
+      // very input it is meant to catch.
+      assert.equal(cell, want,
+        `${folder.path}: the Purpose cell is not the layout's purpose`);
+      assert.ok(!cell.endsWith("…"), `${folder.path}: purpose truncated into the cell`);
+      assert.ok(cell.length < PURPOSE_CELL,
+        `${folder.path}: purpose is ${cell.length} of ${PURPOSE_CELL} chars`);
+    }
   });
 }
 
@@ -202,11 +273,13 @@ function makeLocaleVault(lang) {
   writeFileSync(join(vault, ".projectstore.json"), JSON.stringify({
     spec_policy: "optional", lifecycle_gates: "on",
   }));
-  const readme = loadTemplate(lang, "folder-readme");
-  for (const f of ["adr", "specs", "epics", "research", "concepts", "meetings",
-    "ops", "diagrams"]) {
-    writeFileSync(join(vault, f, "README.md"),
-      renderTemplate(readme, { folder_name: f, folder_description: "d" }));
+  // Real layout-derived preambles, not the literal "d": the e2e below asserts
+  // doctor finds no folder-purpose drift, and a placeholder preamble would make
+  // that assertion pass for the wrong reason.
+  const layout = loadLayout("engineering");
+  for (const folder of layout.folders) {
+    writeFileSync(join(vault, folder.path, "README.md"),
+      renderFolderReadme(layout, folder, lang));
   }
   return { proj, vault };
 }
@@ -274,6 +347,12 @@ for (const lang of LOCALES) {
         .test(`${f.check} ${f.message}`));
     assert.deepEqual(localization, [],
       localization.map((f) => `[${f.check}] ${f.message}`).join("; "));
+    // SPEC-PS-10 contract 8 — the filter above matches neither the check id nor
+    // its message, so this needs its own assertion rather than riding along: a
+    // vault scaffolded in `lang` must not read as drifted under any binding.
+    const purpose = findings.filter((f) => f.check === "folder-purpose");
+    assert.deepEqual(purpose, [],
+      purpose.map((f) => `[${f.check}] ${f.message}`).join("; "));
   });
 }
 
@@ -397,9 +476,9 @@ test("mixed-language vault: ru-headed files lint and reconcile in an en-bound va
     ...VARS, id: "story-chargebacks", epic_id: "PS-X", title: "Chargebacks",
   }));
   // And a folder README carrying ru column names.
+  const ruLayout = loadLayout("engineering");
   writeFileSync(join(vault, "adr", "README.md"),
-    renderTemplate(loadTemplate("ru", "folder-readme"),
-      { folder_name: "adr", folder_description: "d" }));
+    renderFolderReadme(ruLayout, ruLayout.folders.find((f) => f.path === "adr"), "ru"));
   const adr = runScript(proj, "draft.mjs", ["adr", "Use Postgres"]);
   writeFileSync(adr.path, adr.content);
 

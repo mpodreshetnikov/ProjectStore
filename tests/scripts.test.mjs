@@ -333,7 +333,8 @@ const IDX_HEAD = "| File | Title | Status | Date |\n|------|-------|--------|---
 
 function seedCreationFixture() {
   const { proj, vault } = makeVaultProject();
-  for (const path of ["adr", "specs", "epics", "research", "concepts", "meetings", "ops"]) {
+  for (const path of ["adr", "specs", "epics", "research", "concepts", "meetings",
+    "ops", "diagrams"]) {
     mkdirSync(join(vault, path), { recursive: true });
     writeFileSync(join(vault, path, "README.md"),
       `# ${path}\n\n## Index\n\n${IDX_HEAD}\nPROSE BELOW THE TABLE.\n`);
@@ -458,7 +459,8 @@ test("creation e2e: a localized index header reconciles (registry-driven, not an
 });
 
 test("creation command prose applies index rows through the core, under one disclosed gate (contracts 1, 2)", () => {
-  for (const file of ["adr.md", "spec.md", "epic.md", "research.md", "concept.md", "meeting.md", "runbook.md"]) {
+  for (const file of ["adr.md", "spec.md", "epic.md", "research.md", "concept.md",
+    "meeting.md", "runbook.md", "diagram.md"]) {
     // Prose wraps at ~80 columns, so match against a whitespace-flattened
     // copy — a guard that a reflow can silence guards nothing.
     const src = readFileSync(join(REPO, "commands", file), "utf8").replace(/\s+/g, " ");
@@ -668,6 +670,53 @@ test("command prose routes derived-view applies through reconcile --write (contr
   }
   // `codemap set` edits SOURCE frontmatter — contract 7 exempts it explicitly.
   assert.match(readFileSync(join(REPO, "commands", "codemap.md"), "utf8"), /Edit the frontmatter/);
+});
+
+test("scaffold prose renders folder READMEs through the core, never composing them (SPEC-PS-10)", () => {
+  // Prose wraps at ~80 columns, so match against a whitespace-flattened copy —
+  // a guard a reflow can silence guards nothing.
+  const src = readFileSync(join(REPO, "commands", "scaffold.md"), "utf8").replace(/\s+/g, " ");
+  assert.ok(src.includes("draft.mjs\" folder-readmes"),
+    "scaffold.md must render folder READMEs through draft.mjs, not compose them");
+  // The exact instruction this change exists to delete: the model inventing a
+  // folder's stated purpose, differently in every vault.
+  assert.doesNotMatch(src, /Substitute .{0,80}folder_description/,
+    "scaffold.md must not ask the model to substitute folder_description itself");
+  assert.doesNotMatch(src, /folder_description.{0,60}based on the folder kind/,
+    "scaffold.md must not derive the folder description from the kind");
+  assert.ok(/verbatim/.test(src),
+    "scaffold.md must say the rendered content is written verbatim");
+});
+
+test("every creation command states the kind it is NOT (SPEC-PS-10 boundaries)", () => {
+  // The rule has a localized home (the folder README's boundary section, from
+  // the layout sidecar) and this English-only one, read at write time. Same
+  // trade-off scaffold/checklists.json already documents. Structural, not a
+  // string match on the sentence: the clause must sit in the role paragraph,
+  // BEFORE the mechanical steps, where it is read before anything is drafted.
+  const SIBLINGS = {
+    "adr.md": ["spec", "research"],
+    "spec.md": ["adr", "runbook"],
+    "research.md": ["concept", "adr"],
+    "concept.md": ["research"],
+    "meeting.md": ["adr"],
+    "runbook.md": ["spec", "adr"],
+    "diagram.md": ["adr", "spec", "research"],
+  };
+  for (const [file, siblings] of Object.entries(SIBLINGS)) {
+    const raw = readFileSync(join(REPO, "commands", file), "utf8");
+    // Anchored on the first numbered step rather than a "Steps:" header —
+    // spec.md dispatches through "## Creation flow" and has no such header.
+    const steps = raw.search(/\n1\. /);
+    assert.notEqual(steps, -1, `${file}: no numbered step to anchor against`);
+    const role = raw.slice(0, steps).replace(/\s+/g, " ");
+    assert.match(role, /Not this:/,
+      `${file}: the role paragraph must say which kind this is NOT`);
+    for (const sib of siblings) {
+      assert.ok(role.includes(`/projectstore:${sib}`),
+        `${file}: the boundary clause must name /projectstore:${sib} as the alternative`);
+    }
+  }
 });
 
 test("diff-refs: no args => fallback true; --since returns file lists", () => {

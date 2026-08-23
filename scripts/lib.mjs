@@ -338,6 +338,136 @@ export function renderTemplate(template, vars) {
   });
 }
 
+// ─── Layout string registry (SPEC-PS-10 contracts 1, 2, 9) ────────────
+//
+// A layout's folders[] entries name their `purpose` and `not_this` as string
+// IDS; the text lives in scaffold/layouts/<layout>.strings.json, keyed
+// id -> language -> text. The sidecar belongs to the LAYOUT rather than to
+// templates/<lang>/strings.json for one reason: folder meaning is
+// layout-specific, so a custom layout (docs/extending.md) must be able to ship
+// its own strings without editing six bundled per-locale files that the next
+// plugin upgrade overwrites. When that resolution fails a folder's purpose
+// degrades to its bare kind — `adr` means "adr" — which is exactly the
+// tautology this registry exists to retire, so the failure is reported by
+// checkLayoutTemplates rather than thrown here.
+
+// The bundled locale set, DERIVED from templates/ rather than hand-listed.
+// docs/extending.md records that this set was spelled out by hand in four
+// places with nothing checking they agree. This is the one derivation;
+// tests/locales.test.mjs consumes it instead of computing a fifth copy.
+export function bundledLocales() {
+  try {
+    const dir = join(pluginRoot(), "templates");
+    return readdirSync(dir)
+      .filter((d) => statSync(join(dir, d)).isDirectory())
+      .sort();
+  } catch {
+    return ["en"];
+  }
+}
+
+const _layoutStringsCache = new Map();
+
+// Unlike loadHeadingsRegistry this NEVER throws. A missing registry must abort
+// a lint, but a missing sidecar must not abort a scaffold: the folder README is
+// the thing being created, and refusing to render it is a worse outcome than
+// rendering it with the kind as its purpose.
+export function loadLayoutStrings(layoutName) {
+  const key = String(layoutName ?? "");
+  if (_layoutStringsCache.has(key)) return _layoutStringsCache.get(key);
+  let data = {};
+  try {
+    const p = join(pluginRoot(), "scaffold", "layouts", `${key}.strings.json`);
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    if (parsed && typeof parsed === "object") data = parsed;
+  } catch {
+    data = {};
+  }
+  _layoutStringsCache.set(key, data);
+  return data;
+}
+
+// Contract 2 — bound language, then en, then (for `purpose` only) the kind.
+// An unresolvable `not_this` yields null, which renders NO section: falling
+// back to the kind there would state a boundary the layout never drew.
+export function folderStrings(layout, folder, lang) {
+  const strings = loadLayoutStrings(layout && layout.name);
+  const pick = (id) => {
+    const entry = id ? strings[id] : null;
+    if (!entry || typeof entry !== "object") return null;
+    const v = entry[lang] ?? entry.en;
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  };
+  return {
+    purpose: pick(folder.purpose) || String(folder.kind),
+    notThis: pick(folder.not_this),
+  };
+}
+
+// Contract 8 — marks a preamble as layout-derived, so checkFolderPurpose lints
+// only the READMEs this code wrote. A vault scaffolded before SPEC-PS-10 has
+// model-written prose and no marker: unmanaged, and therefore silent, instead
+// of permanently warned at with no remedy on offer. It says what it is because
+// deleting it is the supported way to keep your own wording, and an opt-out
+// nobody can see is not an opt-out.
+export const PURPOSE_MARKER =
+  "<!-- projectstore:purpose — managed by the layout; delete this line to keep your own wording -->";
+
+// Contract 3 — composition lives HERE, not in commands/scaffold.md. Prose
+// cannot be tested, and byte-identical preambles across two independently
+// scaffolded vaults is the whole point of the change.
+//
+// Both the marker and the `## Not this` heading are emitted as part of a
+// SUBSTITUTED VALUE rather than sitting as literal text in the six templates
+// (contract 8). A third-party template that predates this change then loses
+// only the section it never had — not the marker, which would make every
+// folder in that vault permanently unmanaged and unlintable, silently.
+export function renderFolderReadme(layout, folder, lang) {
+  const { purpose, notThis } = folderStrings(layout, folder, lang);
+  const heading = loadStrings(lang).folder_not_this_heading;
+  return renderTemplate(loadTemplate(lang, "folder-readme"), {
+    folder_name: folder.path,
+    folder_description: `${PURPOSE_MARKER}\n${purpose}`,
+    folder_not_this: notThis ? `## ${heading}\n\n${notThis}\n` : "",
+  });
+}
+
+// ─── Locale UI strings ─────────────────────────────────────────────────
+//
+// templates/<lang>/strings.json is a render-only map of chrome that no script
+// parses back: the statusline's labels and the folder-README's `Not this`
+// heading. It is deliberately NOT the heading registry below (which exists so
+// deterministic scripts can RECOGNIZE a section in any bundled language) and
+// deliberately not the layout sidecar above (which is layout data, not
+// language data). Never throws — a statusline that cannot render is worse than
+// one rendering English.
+export const FALLBACK_STRINGS = {
+  statusline_no_work: "No epic or story in this session yet",
+  statusline_state_error: "session state unreadable",
+  statusline_example_epic: "Epic",
+  statusline_example_story: "Story",
+  folder_not_this_heading: "Not this",
+};
+
+const _stringsCache = new Map();
+
+export function loadStrings(lang) {
+  const key = String(lang || "en");
+  if (_stringsCache.has(key)) return _stringsCache.get(key);
+  const read = (l) => {
+    try {
+      return JSON.parse(readFileSync(
+        join(pluginRoot(), "templates", l, "strings.json"), "utf8"));
+    } catch {
+      return {};
+    }
+  };
+  // Merged once and cached, so the fallback chain is not recomputed per call.
+  const merged = { ...FALLBACK_STRINGS, ...read("en"), ...(key === "en" ? {} : read(key)) };
+  _stringsCache.set(key, merged);
+  return merged;
+}
+
 // ─── Heading / keyword registry (PS-SPEC story-002) ────────────────────
 //
 // scaffold/headings.json is the language-independent registry of the section
@@ -1010,11 +1140,22 @@ export function truncFront(s, max) {
 
 // Contract 6: a folder's purpose is its README's own prose — the slice above the
 // first `## ` heading. A README that opens with `## ` at byte 0 has no preamble.
-// Missing, empty or unreadable yields the folder's KIND, never an empty cell.
-export function folderPurpose(readmeText, kind) {
+//
+// SPEC-PS-10 contract 6: an HTML comment is chrome, not prose. Stripping it is
+// what lets renderFolderReadme put its managed-by marker where it belongs —
+// beside the text it marks — and it also stops a hand-written `<!-- todo -->`
+// leaking into the navigation skeleton, which it does today. Only WELL-FORMED
+// spans are stripped: a greedy match would let one unterminated `<!--` swallow
+// the whole preamble and silently replace a purpose the README plainly states
+// with the fallback below.
+//
+// SPEC-PS-10 contract 7: with no prose, `fallback` (the layout-resolved purpose)
+// wins over `kind`. The two-argument form still yields the kind, which is the
+// tautology — `adr` means "adr" — that a caller holding the layout can now avoid.
+export function folderPurpose(readmeText, kind, fallback = null) {
   const text = readmeText == null ? "" : String(readmeText);
   const m = text.match(/(^|\n)## /);
-  const head = m ? text.slice(0, m.index) : text;
+  const head = (m ? text.slice(0, m.index) : text).replace(/<!--[\s\S]*?-->/g, " ");
   const prose = head
     .split("\n")
     .filter((l) => !l.startsWith("#"))
@@ -1022,7 +1163,9 @@ export function folderPurpose(readmeText, kind) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\|/g, "\\|");
-  return prose ? truncEnd(prose, PURPOSE_CELL) : String(kind);
+  if (prose) return truncEnd(prose, PURPOSE_CELL);
+  const alt = fallback == null ? "" : String(fallback).replace(/\s+/g, " ").trim();
+  return alt ? truncEnd(alt.replace(/\|/g, "\\|"), PURPOSE_CELL) : String(kind);
 }
 
 // Contract 19 — a path cell, with the truncation mark OUTSIDE the copyable

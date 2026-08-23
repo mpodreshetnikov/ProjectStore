@@ -56,9 +56,15 @@ import {
   extractLinks,
   buildNodeIndex,
   resolveLinkTarget,
+  loadStrings,
+  folderStrings,
+  renderFolderReadme,
+  bundledLocales,
+  PURPOSE_MARKER,
 } from "../scripts/lib.mjs";
 import {
   checkLayoutTemplates,
+  checkFolderPurpose,
   checkArtifactIdentity,
   checkArtifactNames,
   checkExternalRefsForm,
@@ -514,12 +520,25 @@ test("listOf parses inline flow and rejects block-sequence remnants", () => {
 
 // ─── layout-driven template check (story-001) ──────────────────────────
 
-test("checkLayoutTemplates: no finding for command-less folders (diagram), spec required", () => {
+// This test used to be named "no finding for command-less folders (diagram)".
+// SPEC-PS-10 gave `diagram` its command and template, so the engineering layout
+// no longer HAS a command-less folder and the name described a branch this
+// assertion could not reach any more. The branch still exists in
+// checkLayoutTemplates for custom layouts; exercising it would need a layout
+// file of its own, which is not something this suite ships.
+test("checkLayoutTemplates: the engineering layout is fully templated, spec required", () => {
   const findings = checkLayoutTemplates({ layout: "engineering", language: "en" });
   assert.deepEqual(findings, [], `expected clean, got: ${JSON.stringify(findings)}`);
   const layout = loadLayout("engineering");
   assert.ok(layout.commands.includes("spec"));
   assert.ok(layout.folders.some((f) => f.kind === "spec" && f.prefix === "SPEC-"));
+  // Every declared folder kind is reachable through a command now — the gap
+  // that made `diagrams/` a folder no supported path could fill.
+  for (const f of layout.folders) {
+    const cmd = f.kind === "epic" ? "epic" : f.kind;
+    assert.ok(layout.commands.includes(cmd),
+      `${f.path}: kind "${f.kind}" has no command — the folder cannot be filled`);
+  }
 });
 
 // ─── spec fixtures ─────────────────────────────────────────────────────
@@ -2064,6 +2083,128 @@ test("skeleton contract 6: purpose is the README's own prose, with named fallbac
   // A `\|` sliced in half would leave a stray backslash and un-escape the pipe.
   const escaped = folderPurpose("# T\n\n" + "y".repeat(PURPOSE_CELL - 2) + "|tail\n", "adr");
   assert.ok(!/\\…$/.test(escaped), "truncation never orphans a cell escape");
+});
+
+test("SPEC-PS-10 contract 6: an HTML comment is chrome, not purpose prose", () => {
+  assert.equal(
+    folderPurpose(`# adr\n\n${PURPOSE_MARKER}\nDecisions with context.\n\n## Index\n`, "adr"),
+    "Decisions with context.",
+    "the managed-by marker must not render into the navigation skeleton");
+  assert.equal(folderPurpose("# T\n\n<!-- a\nb -->\nReal.\n\n## Index\n", "adr"), "Real.",
+    "a multi-line comment is stripped whole");
+  // Deliberate: a greedy strip would let one half-deleted comment swallow the
+  // preamble, silently replacing a purpose the README plainly states.
+  assert.equal(folderPurpose("# T\n\n<!-- oops\nReal.\n\n## Index\n", "adr"),
+    "<!-- oops Real.", "an unterminated comment stays literal");
+});
+
+test("SPEC-PS-10 contract 7: the layout purpose outranks the kind as fallback", () => {
+  assert.equal(folderPurpose("## Index\n", "adr", "Architectural decisions."),
+    "Architectural decisions.", "no preamble → the layout's purpose, not the tautology");
+  assert.equal(folderPurpose("## Index\n", "adr"), "adr",
+    "two-argument callers keep the kind — the change is additive");
+  assert.equal(folderPurpose("## Index\n", "adr", "   "), "adr",
+    "a blank fallback is no fallback");
+  assert.equal(folderPurpose("## Index\n", "adr", "a | b"), "a \\| b",
+    "the fallback is escaped for the cell like prose is");
+  assert.equal(folderPurpose("# T\n\nOwn prose.\n\n## Index\n", "adr", "Layout."),
+    "Own prose.", "prose still wins over the fallback");
+});
+
+// ─── SPEC-PS-10 contract 8: folder purpose & boundary drift ────────────
+
+function mkPurposeVault() {
+  const vault = mkdtempSync(join(tmpdir(), "ps-purpose-"));
+  const layout = loadLayout("engineering");
+  for (const f of layout.folders) mkdirSync(join(vault, f.path), { recursive: true });
+  return { vault, layout, cfg: { vault_path: vault, layout: "engineering" } };
+}
+
+function scaffoldPurpose(vault, layout, lang) {
+  for (const f of layout.folders) {
+    writeFileSync(join(vault, f.path, "README.md"), renderFolderReadme(layout, f, lang));
+  }
+}
+
+test("checkFolderPurpose: a freshly scaffolded vault is clean in every bundled locale", () => {
+  for (const lang of bundledLocales()) {
+    const { vault, layout, cfg } = mkPurposeVault();
+    scaffoldPurpose(vault, layout, lang);
+    // Bound to en throughout: a ru-scaffolded vault read under an en binding is
+    // correct, not drifted — the same rule headingLineRe follows.
+    assert.deepEqual(checkFolderPurpose(cfg, layout), [],
+      `${lang} vault warned under an en binding`);
+  }
+});
+
+test("checkFolderPurpose: a rewritten preamble drifts, a rewritten boundary drifts", () => {
+  const { vault, layout, cfg } = mkPurposeVault();
+  scaffoldPurpose(vault, layout, "en");
+
+  const adr = join(vault, "adr", "README.md");
+  writeFileSync(adr, readFileSync(adr, "utf8")
+    .replace(/Architectural decisions[^\n]*/, "Whatever I felt like writing."));
+  let out = checkFolderPurpose(cfg, layout);
+  assert.equal(out.length, 1, JSON.stringify(out));
+  assert.equal(out[0].check, "folder-purpose");
+  assert.equal(out[0].level, "warn", "a deliberate hand-edit is legitimate — never an issue");
+  assert.equal(out[0].file, "adr/README.md");
+  assert.match(out[0].message, /preamble/);
+
+  // The boundary rule lives BELOW the preamble now, so deleting it leaves the
+  // purpose intact. Before contract 8 covered both halves, this was silent.
+  scaffoldPurpose(vault, layout, "en");
+  const research = join(vault, "research", "README.md");
+  writeFileSync(research,
+    readFileSync(research, "utf8").replace(/## Not this[\s\S]*?\n## Index/, "## Index"));
+  out = checkFolderPurpose(cfg, layout);
+  assert.equal(out.length, 1, JSON.stringify(out));
+  assert.equal(out[0].file, "research/README.md");
+  assert.match(out[0].message, /boundary/);
+});
+
+test("checkFolderPurpose: unmarked and absent READMEs are not ours to lint", () => {
+  const { vault, layout, cfg } = mkPurposeVault();
+  // A vault scaffolded before v0.25: model-written prose, no marker. Warning on
+  // every folder of every existing vault, forever, with no repair on offer is
+  // exactly what the marker exists to prevent.
+  for (const f of layout.folders) {
+    writeFileSync(join(vault, f.path, "README.md"),
+      `# ${f.path}\n\nSomething a model wrote in 2026.\n\n## Index\n`);
+  }
+  assert.deepEqual(checkFolderPurpose(cfg, layout), [], "unmarked READMEs must stay silent");
+
+  // Deleting the marker line is the documented opt-out, and it must work on a
+  // README that is otherwise still layout-derived.
+  scaffoldPurpose(vault, layout, "en");
+  const ops = join(vault, "ops", "README.md");
+  writeFileSync(ops, readFileSync(ops, "utf8")
+    .replace(`${PURPOSE_MARKER}\n`, "").replace(/Operational procedures[^\n]*/, "Mine now."));
+  assert.deepEqual(checkFolderPurpose(cfg, layout), [],
+    "deleting the marker opts the folder out, as the marker itself promises");
+
+  const { vault: empty, layout: l2, cfg: c2 } = mkPurposeVault();
+  assert.deepEqual(checkFolderPurpose(c2, l2), [],
+    "a missing README is checkIndexes' business, not this check's");
+  assert.ok(existsSync(empty));
+});
+
+test("checkFolderPurpose: a folder whose layout declares no boundary needs no section", () => {
+  const { vault, cfg } = mkPurposeVault();
+  const layout = loadLayout("engineering");
+  // Drop the declaration, keep the folder — contract 2's "absent id yields no
+  // section" must not read as "the section went missing".
+  const folder = layout.folders.find((f) => f.path === "concepts");
+  delete folder.not_this;
+  for (const f of layout.folders) {
+    writeFileSync(join(vault, f.path, "README.md"), renderFolderReadme(layout, f, "en"));
+  }
+  assert.deepEqual(checkFolderPurpose(cfg, layout), [],
+    "an undeclared boundary is not a removed one");
+  assert.ok(!renderFolderReadme(layout, folder, "en")
+    .includes(`## ${loadStrings("en").folder_not_this_heading}`),
+    "no declaration must render no section, not an empty one");
+  assert.ok(folderStrings(layout, folder, "en").notThis === null);
 });
 
 test("skeleton contract 7: the payload carries no artifact content", () => {
