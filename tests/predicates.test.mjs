@@ -61,6 +61,7 @@ import {
   renderFolderReadme,
   bundledLocales,
   PURPOSE_MARKER,
+  FALLBACK_STRINGS,
 } from "../scripts/lib.mjs";
 import {
   checkLayoutTemplates,
@@ -2290,6 +2291,40 @@ test("checkFolderPurpose: unmarked and absent READMEs are not ours to lint", () 
   assert.deepEqual(checkFolderPurpose(c2, l2), [],
     "a missing README is checkIndexes' business, not this check's");
   assert.ok(existsSync(empty));
+});
+
+test("checkFolderPurpose: an unresolvable purpose id is the INSTALL check's finding, not this one", () => {
+  const { vault, cfg } = mkPurposeVault();
+  const layout = loadLayout("engineering");
+  for (const f of layout.folders) {
+    writeFileSync(join(vault, f.path, "README.md"), renderFolderReadme(layout, f, "en"));
+  }
+  assert.deepEqual(checkFolderPurpose(cfg, layout), [], "sanity: correctly scaffolded is clean");
+
+  // Now break the layout the way a missing or stale sidecar breaks it: the id
+  // resolves to nothing, so folderStrings degrades to the bare kind. Without a
+  // guard, the EXPECTED render degrades too, every correct README "matches in
+  // no bundled language", and the message blames the file while offering to
+  // delete the marker — turning a transient install fault into permanent,
+  // silent unmanagement of a folder whose README was never wrong.
+  for (const f of layout.folders) f.purpose = `${f.purpose}_typo`;
+  assert.deepEqual(checkFolderPurpose(cfg, layout), [],
+    "a dead purpose id must produce no folder-purpose finding — checkLayoutTemplates reports it");
+});
+
+test("FALLBACK_STRINGS agrees with templates/en/strings.json on every key it shares", () => {
+  // The hoist out of statusline.mjs was meant to be behaviour-preserving and
+  // silently dropped the `⚠` from statusline_state_error. The difference only
+  // shows when strings.json is unreadable — exactly when a warning glyph earns
+  // its keep — so no existing test could see it. This one can.
+  const en = JSON.parse(readFileSync(
+    fileURLToPath(new URL("../templates/en/strings.json", import.meta.url)), "utf8"));
+  for (const [k, v] of Object.entries(FALLBACK_STRINGS)) {
+    if (k in en) {
+      assert.equal(v, en[k], `FALLBACK_STRINGS.${k} has drifted from templates/en/strings.json`);
+    }
+  }
+  assert.ok(FALLBACK_STRINGS.statusline_state_error.startsWith("⚠"));
 });
 
 test("checkFolderPurpose: a folder whose layout declares no boundary needs no section", () => {

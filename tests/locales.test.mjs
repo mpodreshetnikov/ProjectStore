@@ -128,6 +128,14 @@ for (const lang of LOCALES) {
       if (kind === "folder-readme" || kind === "kanban") continue;
       const { data } = parseFrontmatter(out);
       assert.ok(data && data.type, `${kind}: frontmatter lost its type:`);
+      // SPEC-PS-10 contract 11 names external_refs for the diagram kind, and
+      // docs/extending.md asks every NEW kind for it (ADR-010: the designed
+      // home for Jira/YouTrack-style keys). The older kinds predate that and
+      // are deliberately not held to it here.
+      if (kind === "diagram") {
+        assert.match(out, /^external_refs: \{\}$/m,
+          "diagram: contract 11's inline-flow external_refs is missing");
+      }
       // Enum values are machine-read and stay English in every locale.
       if (data.status) {
         assert.match(String(data.status), /^(proposed|draft|planned)$/,
@@ -217,6 +225,9 @@ for (const lang of LOCALES) {
       assert.equal(once, renderFolderReadme(layout, folder, lang),
         `${folder.path}: two renders differ — re-scaffolding would not reproduce`);
       assert.ok(once.includes(PURPOSE_MARKER), `${folder.path}: rendered README carries no marker`);
+      // A layout declaring no `not_this` substitutes "" into a line of its own;
+      // deterministic, but not a file anyone would have written by hand.
+      assert.ok(!/\n{3,}/.test(once), `${folder.path}: blank-line run in the rendered README`);
       if (folder.not_this) {
         assert.match(once, new RegExp(`^## ${escapeRe(loadStrings(lang).folder_not_this_heading)}$`, "m"),
           `${folder.path}: no localized boundary section`);

@@ -425,11 +425,15 @@ export const PURPOSE_MARKER =
 export function renderFolderReadme(layout, folder, lang) {
   const { purpose, notThis } = folderStrings(layout, folder, lang);
   const heading = loadStrings(lang).folder_not_this_heading;
-  return renderTemplate(loadTemplate(lang, "folder-readme"), {
+  const out = renderTemplate(loadTemplate(lang, "folder-readme"), {
     folder_name: folder.path,
     folder_description: `${PURPOSE_MARKER}\n${purpose}`,
     folder_not_this: notThis ? `## ${heading}\n\n${notThis}\n` : "",
   });
+  // A layout that declares no `not_this` substitutes "" into a line of its own,
+  // which would leave a triple newline before `## Index`. Deterministic either
+  // way, but only one of the two is a file anyone would have written by hand.
+  return out.replace(/\n{3,}/g, "\n\n");
 }
 
 // ─── Locale UI strings ─────────────────────────────────────────────────
@@ -441,11 +445,17 @@ export function renderFolderReadme(layout, folder, lang) {
 // deliberately not the layout sidecar above (which is layout data, not
 // language data). Never throws — a statusline that cannot render is worse than
 // one rendering English.
+// Every value here is what templates/en/strings.json says, and a test pins that
+// agreement: this map is what renders when that file cannot be read, so a
+// fallback that quietly differs from the thing it stands in for is a bug you
+// only meet once the install is already broken. The hoist out of statusline.mjs
+// dropped the `⚠` exactly that way. Two keys the old private copy lacked are
+// carried here as well — without them a preview rendered `undefined`.
 export const FALLBACK_STRINGS = {
   statusline_no_work: "No epic or story in this session yet",
-  statusline_state_error: "session state unreadable",
-  statusline_example_epic: "Epic",
-  statusline_example_story: "Story",
+  statusline_state_error: "⚠ session state unreadable",
+  statusline_example_epic: "Super Feature in a Super Product",
+  statusline_example_story: "Toilet-Paper Handle",
   folder_not_this_heading: "Not this",
 };
 

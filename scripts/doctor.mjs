@@ -804,8 +804,20 @@ function sectionBodyOf(text, heading) {
 
 export function checkFolderPurpose(cfg, layout) {
   const out = [];
+  const strings = loadLayoutStrings(layout.name || cfg.layout);
+  // NIT: derived once, not once per folder — it is a readdir plus a stat per
+  // bundled locale, and unlike its two neighbours it carries no cache.
+  const locales = bundledLocales();
   for (const folder of layout.folders) {
     if (folder.readme !== true) continue;
+    // A folder whose purpose id does not resolve is checkLayoutTemplates'
+    // finding, not this one. Without this guard a missing or broken sidecar
+    // makes the expected render degrade to the bare kind, so every correctly
+    // scaffolded README "matches in no bundled language" and gets blamed for a
+    // fault in the install — while the message offers to delete the marker,
+    // which would permanently opt that folder out of a check that was working.
+    // A transient install fault must not become silent, irreversible drift.
+    if (!folder.purpose || !strings[folder.purpose]) continue;
     const readmePath = join(cfg.vault_path, folder.path, "README.md");
     if (!existsSync(readmePath)) continue; // a missing README is checkIndexes' business
     let actual;
@@ -818,7 +830,8 @@ export function checkFolderPurpose(cfg, layout) {
     let purposeMatched = false;
     let declaresBoundary = false;
     let explained = false;
-    for (const lang of bundledLocales()) {
+    let judged = false;
+    for (const lang of locales) {
       let expected, heading, notThis;
       try {
         expected = renderFolderReadme(layout, folder, lang);
@@ -827,6 +840,7 @@ export function checkFolderPurpose(cfg, layout) {
       } catch {
         continue; // total per contract 8: one unreadable locale degrades itself only
       }
+      judged = true;
       if (notThis) declaresBoundary = true;
       const samePurpose =
         folderPurpose(actual, folder.kind) === folderPurpose(expected, folder.kind);
@@ -838,6 +852,9 @@ export function checkFolderPurpose(cfg, layout) {
       if (samePurpose && sameBoundary) { explained = true; break; }
     }
     if (explained) continue;
+    // Not one locale rendered — templates/ is unreadable. Same reasoning as the
+    // sidecar guard above: report nothing rather than blame the README.
+    if (!judged) continue;
 
     if (!purposeMatched) {
       out.push(finding("vault", "warn", "folder-purpose",
