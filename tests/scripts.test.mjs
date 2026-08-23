@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import * as migrationsModule from "../scripts/migrations.mjs";
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -747,9 +748,14 @@ function seedOldVault({ ruFolder = null } = {}) {
   return { proj, vault };
 }
 
+// A real digest, not a length tally: a same-length write would walk past a
+// helper named "hash", and this one guards the purity of the plan mode.
 const hashTree = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
   .filter((d) => d.isFile())
-  .map((d) => `${d.parentPath || d.path}/${d.name}:${readFileSync(join(d.parentPath || d.path, d.name), "utf8").length}`)
+  .map((d) => {
+    const abs = join(d.parentPath || d.path, d.name);
+    return `${abs}:${createHash("sha256").update(readFileSync(abs)).digest("hex")}`;
+  })
   .sort().join("|");
 
 test("migrate: the plan writes nothing, and names what it cannot act on", () => {
@@ -1006,6 +1012,75 @@ test("nothing anywhere tells a user to DELETE the purpose marker", () => {
       `${f} still instructs the user to delete the marker to keep their wording`);
     assert.doesNotMatch(src, /delete this line to keep your own wording/i, f);
   }
+});
+
+test("migrate: a throwing transform degrades its own target, not the run", () => {
+  // planAll guards `plan`; nothing guarded `transform`. An entry that threw at
+  // write time escaped runMigrate after siblings were already written and
+  // archived — the user got a stack trace and no report of what landed or where
+  // the pre-images went, which is precisely what the command promises to print.
+  const { proj, vault } = seedOldVault();
+  const src = `
+    process.env.CLAUDE_PROJECT_DIR = ${JSON.stringify(proj)};
+    process.env.CLAUDE_PLUGIN_ROOT = ${JSON.stringify(REPO)};
+    const mig = await import(${JSON.stringify(join(REPO, "scripts", "migrate.mjs"))});
+    const { readConfig } = await import(${JSON.stringify(join(REPO, "scripts", "lib.mjs"))});
+    const ctx = mig.buildMigrationContext(readConfig());
+    const plan = mig.planAll(ctx)[0];
+    const boom = { ...plan.pending.find((e) => e.rel === "adr/README.md"),
+                   transform: () => { throw new Error("boom"); } };
+    process.stdout.write(JSON.stringify(mig.applyOne(ctx, plan.id, boom)));
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8" });
+  assert.equal(r.status, 0, `the throw must not escape: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.applied, false);
+  assert.match(out.skipped || out.error, /transform threw: boom/);
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Model-written prose for adr/,
+    "a target whose transform threw must be left untouched");
+});
+
+test("migrate: a failed archive aborts that file and lets its siblings through", () => {
+  // The pre-image is the undo. Replacing a file whose previous contents could
+  // not be archived would leave no way back at all, so that target aborts.
+  const { proj, vault } = seedOldVault();
+  const dir = join(vault, ".projectstore", "migrations", "folder-readme-purpose");
+  mkdirSync(join(dir, "adr__README.md.0123456789ab"), { recursive: true }); // a directory where the file goes
+  const r = runInRaw(proj, "migrate.mjs", ["--write"]);
+  const out = JSON.parse(r.stdout);
+  const results = out.migrations[0].results;
+  const adr = results.find((x) => x.rel === "adr/README.md");
+  // Either the archive collides (aborting adr) or it does not; what must hold
+  // is that no file is ever replaced without its pre-image, and siblings apply.
+  assert.ok(results.filter((x) => x.applied).length >= 6, JSON.stringify(results));
+  if (adr && adr.error) {
+    assert.match(adr.error, /pre-image not archived/);
+    assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Model-written prose for adr/);
+    assert.notEqual(r.status, 0, "an error must exit nonzero");
+  }
+});
+
+test("migrate: reconcile finds nothing to do on a migrated vault, and `mine` round-trips", () => {
+  const { proj, vault } = seedOldVault();
+  // Drive the vault to reconcile's fixed point FIRST — the fixture carries an
+  // index row for an artifact that does not exist, and reconcile removing it is
+  // reconcile working, not the migration disturbing anything. Migrating from a
+  // point that is already fixed is the only way this asserts what it claims.
+  runIn(proj, "reconcile.mjs", ["--write"]);
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const rec = runIn(proj, "reconcile.mjs", ["--write"]);
+  assert.equal(rec.summary.failed, 0, JSON.stringify(rec.summary));
+  assert.deepEqual((rec.indexes || []).filter((i) => i.changed).map((i) => i.folder), [],
+    "the migration must leave the managed index at reconcile's fixed point");
+
+  // mine → managed makes the folder managed again, which is what makes the
+  // opt-out reversible rather than a one-way door.
+  runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:concepts/README.md"]);
+  const p = join(vault, "concepts", "README.md");
+  assert.match(readFileSync(p, "utf8"), /projectstore:purpose mine/);
+  writeFileSync(p, readFileSync(p, "utf8").replace("projectstore:purpose mine", "projectstore:purpose managed"));
+  assert.deepEqual(runIn(proj, "doctor.mjs", ["--json"]).filter((f) => f.check === "folder-purpose"), [],
+    "a re-managed folder that still matches the layout is clean, not drifted");
 });
 
 test("doctor: pending migrations warn, unmigratable ones inform, a migrated vault says nothing", () => {

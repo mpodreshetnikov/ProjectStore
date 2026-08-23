@@ -59,36 +59,47 @@ function readDeclined(vault, id) {
   }
 }
 
-// The region a folder-README transform owns: everything above the index
-// heading. Below it the bytes are copied through by construction, so a change
-// there cannot invalidate the consent the preview obtained.
-function ownedRegion(bytes) {
-  const f = findManagedIndex(bytes);
-  if (f.unusable || f.sectionStart == null) return String(bytes ?? "");
-  return f.lines.slice(0, f.sectionStart).join("\n");
+// What a change owns, and therefore what a concurrent write has to leave alone
+// for the approved preview to still hold. The DEFAULT is the whole file — full
+// compare-and-swap, erring toward reporting a conflict. A migration that copies
+// part of the file through by construction may narrow it by declaring
+// `ownedRegion`, and that narrowing then belongs to the migration that earned
+// it rather than being imposed by the runner on every entry ever added.
+function ownedRegion(entry, bytes) {
+  const scope = entry && typeof entry.ownedRegion === "function" ? entry.ownedRegion : null;
+  if (!scope) return String(bytes ?? "");
+  try {
+    return scope(bytes);
+  } catch {
+    return String(bytes ?? "");
+  }
 }
 
-export function buildMigrationContext(cfg) {
+// `overrides` lets a caller that has already loaded the layout and the vault
+// config hand them over. doctor has both, and loadLayout is an uncached
+// readFileSync+parse — re-reading them only to overwrite the result afterwards
+// is a read per doctor run for nothing.
+export function buildMigrationContext(cfg, overrides = {}) {
   const cache = new Map();
   return {
     vault: cfg.vault_path,
     project: projectRoot(),
     plugin: pluginRoot(),
-    layout: loadLayout(cfg.layout),
-    vaultCfg: readVaultConfig(cfg.vault_path),
+    layout: overrides.layout || loadLayout(cfg.layout),
+    vaultCfg: overrides.vaultCfg || readVaultConfig(cfg.vault_path),
     lang: cfg.language || "en",
     // Memoized for THIS invocation only, so a registry of twenty entries walks
     // the vault once. Nothing survives the process, so nothing can go stale.
     read(path) {
       if (cache.has(path)) return cache.get(path);
-      let text = null;
+      let result = null;
       try {
-        text = existsSync(path) ? readFileSync(path, "utf8") : null;
-      } catch {
-        text = null;
+        result = existsSync(path) ? { text: readFileSync(path, "utf8") } : null;
+      } catch (e) {
+        result = { error: e && e.message ? e.message : String(e) };
       }
-      cache.set(path, text);
-      return text;
+      cache.set(path, result);
+      return result;
     },
   };
 }
@@ -136,7 +147,16 @@ export function planAll(ctx, selection = null) {
 }
 
 function preview(entry) {
-  const after = entry.transform(entry.before);
+  // planAll guards `plan`; nothing guarded `transform`. A registry entry that
+  // throws here escaped runMigrate entirely — after siblings had already been
+  // written and archived — so the user got a stack trace and no report of what
+  // landed or where the pre-images went.
+  let after;
+  try {
+    after = entry.transform(entry.before);
+  } catch (e) {
+    return { skip: `transform threw: ${e && e.message ? e.message : String(e)}` };
+  }
   return after && after.skip ? { skip: after.skip } : { after };
 }
 
@@ -163,11 +183,16 @@ export function applyOne(ctx, id, entry, expect = null) {
   } catch (e) {
     return { rel: entry.rel, applied: false, error: e.message };
   }
-  const recomputed = entry.transform(current);
+  let recomputed;
+  try {
+    recomputed = entry.transform(current);
+  } catch (e) {
+    return { rel: entry.rel, applied: false, error: `transform threw: ${e && e.message ? e.message : String(e)}` };
+  }
   if (recomputed && recomputed.skip) {
     return { rel: entry.rel, applied: false, skipped: recomputed.skip };
   }
-  if (ownedRegion(recomputed) !== ownedRegion(shown.after)) {
+  if (ownedRegion(entry, recomputed) !== ownedRegion(entry, shown.after)) {
     return {
       rel: entry.rel,
       applied: false,
@@ -220,7 +245,8 @@ export function runMigrate({ write = false, only = null, decline = null, expect 
       die(`"${rel}" does not exist in the vault — current targets of "${id}": `
         + ([...known.pending, ...known.skipped].map((e) => e.rel).join(", ") || "(none)"));
     }
-    const before = ctx.read(path);
+    const readDecl = ctx.read(path);
+    const before = readDecl && readDecl.text != null ? readDecl.text : null;
     if (before != null && purposeMarkerState(before) === null && /^# /m.test(before)) {
       const marked = before.replace(/^(# [^\n]*\n)/m, `$1\n${purposeMarker("mine")}`);
       writeFileAtomic(path, marked);
@@ -275,7 +301,13 @@ export function runMigrate({ write = false, only = null, decline = null, expect 
     id: r.id,
     skipped: r.skipped,
     error: r.error,
-    results: r.pending.map((e) => applyOne(ctx, r.id, e, expect)),
+    results: r.pending.map((e) => {
+      try {
+        return applyOne(ctx, r.id, e, expect);
+      } catch (err) {
+        return { rel: e.rel, applied: false, error: err && err.message ? err.message : String(err) };
+      }
+    }),
   }));
   const failed = results.some((r) => r.error
     || r.results.some((x) => x.error || x.conflict));

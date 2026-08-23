@@ -29,7 +29,6 @@
 
 import { join } from "node:path";
 import {
-  loadTemplate,
   renderFolderReadme,
   findManagedIndex,
   purposeMarkerState,
@@ -40,32 +39,38 @@ import {
 // not of the reader's config. A teammate bound to `en` migrating a `ru` vault
 // must not staple an English preamble above `## Индекс`.
 function readmeLanguage(before, layout, folder, fallback) {
-  // The index heading alone does not identify a language — `## Index` is the
-  // form in de, en AND fr — so a heading lookup hands whichever binding the
-  // READER happens to have to a vault written in another. Score each locale by
-  // how much of its folder-readme template is literally present instead: the
-  // footer and the index comment differ in all six, which separates the three
-  // that share a heading. The binding only breaks ties.
-  const text = String(before ?? "");
-  let best = fallback;
-  let bestScore = -1;
+  // The TABLE HEADER ROW, not the `## ` section heading above it. The heading is
+  // `## Index` in de, en AND fr — only 4 of 6 locales are distinguishable by it,
+  // and resolving that ambiguity toward the reader's binding is how a German
+  // vault gets an English preamble stapled above `| Datei | Titel | … |`, with
+  // checkFolderPurpose permanently silent because the file now matches `en`
+  // exactly. The header row is distinct in all six, which is why contract 11
+  // names it.
+  const found = findManagedIndex(before);
+  if (found.unusable) return fallback;
+  const header = found.lines[found.headIdx].trim();
   for (const lang of bundledLocales()) {
-    let tpl;
+    let rendered;
     try {
-      tpl = loadTemplate(lang, "folder-readme");
+      rendered = findManagedIndex(renderFolderReadme(layout, folder, lang));
     } catch {
       continue;
     }
-    let score = 0;
-    for (const line of tpl.split("\n")) {
-      const t = line.trim();
-      if (!t || t.includes("{{")) continue;
-      if (text.includes(t)) score += 1;
-    }
-    if (lang === fallback) score += 0.5;
-    if (score > bestScore) { bestScore = score; best = lang; }
+    if (rendered.unusable) continue;
+    if (rendered.lines[rendered.headIdx].trim() === header) return lang;
   }
-  return best;
+  return fallback;
+}
+
+// What this migration owns, and therefore what a concurrent write must leave
+// alone for an approved preview to still hold: everything above the index
+// heading. Below it the bytes are copied through by construction, so a sibling
+// session appending an index row — which since v0.22 every artifact creation
+// does automatically — cannot invalidate the consent the user gave.
+function aboveIndex(bytes) {
+  const f = findManagedIndex(bytes);
+  if (f.unusable || f.sectionStart == null) return String(bytes ?? "");
+  return f.lines.slice(0, f.sectionStart).join("\n");
 }
 
 // Everything the layout renders above the index heading, then the original
@@ -113,7 +118,15 @@ export const MIGRATIONS = [
         if (folder.readme !== true) continue;
         const rel = `${folder.path}/README.md`;
         const path = join(ctx.vault, folder.path, "README.md");
-        const before = ctx.read(path);
+        const read = ctx.read(path);
+        // Absent and unreadable are different answers: a folder with no README
+        // is checkIndexes' business, while one we cannot read is a target we
+        // failed to act on and contract 8 says so out loud.
+        if (read && read.error) {
+          out.push({ rel, path, skipped: `unreadable: ${read.error}` });
+          continue;
+        }
+        const before = read == null ? null : read.text;
         if (before == null) continue;
         // `mine` — the owner claimed this wording; never plan over it.
         if (purposeMarkerState(before) === "mine") continue;
@@ -137,6 +150,7 @@ export const MIGRATIONS = [
           lang,
           before,
           transform: (bytes) => spliceFolderReadme(bytes, ctx.layout, folder, lang),
+          ownedRegion: aboveIndex,
         });
       }
       return out;

@@ -898,10 +898,7 @@ export function checkMigrations(cfg, layout, vaultCfg = null) {
   const out = [];
   let report;
   try {
-    const ctx = buildMigrationContext(cfg);
-    if (vaultCfg) ctx.vaultCfg = vaultCfg; // read once, by the caller
-    ctx.layout = layout;
-    report = planAll(ctx);
+    report = planAll(buildMigrationContext(cfg, { layout, vaultCfg }));
   } catch (e) {
     return [finding("vault", "warn", "migrations",
       `pending migrations could not be computed: ${e && e.message ? e.message : String(e)}`)];

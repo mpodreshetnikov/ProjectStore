@@ -72,7 +72,8 @@ vault-side layout or template override):
    characters once whitespace is collapsed. `not_this` becomes the README's
    own boundary section and is not competing for that cell, so it can be
    longer. Both are checked by doctor's `folder-purpose` check — but only on
-   READMEs carrying the `<!-- projectstore:purpose -->` marker that
+   READMEs whose `<!-- projectstore:purpose managed … -->` marker says `managed` —
+   `mine` means the user owns that wording — the marker that
    `renderFolderReadme` emits, so a hand-written README is never linted.
 
 If the kind introduces **new section headings or inline keywords** that
