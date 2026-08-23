@@ -3,7 +3,11 @@ description: Create a new concept note (definition, mental model, glossary entry
 argument-hint: <title>
 ---
 
-You are creating a concept note.
+You are creating a concept note — what one term means, in the sense this
+project uses it.
+
+Not this: weighing options against each other is a research note
+(`/projectstore:research`), not a concept. A concept defines; it never compares.
 
 Steps:
 

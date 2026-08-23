@@ -59,8 +59,18 @@ import {
   readEntryLog,
   lastVaultActivityMs,
   ENTRY_IGNORE,
+  bundledLocales,
+  renderFolderReadme,
+  folderPurpose,
+  folderStrings,
+  loadLayoutStrings,
+  resolveLayoutString,
+  loadStrings,
+  PURPOSE_MARKER,
+  purposeMarkerState,
 } from "./lib.mjs";
 import { uncommittedProjectFiles, lastCommitMs } from "./diff-refs.mjs";
+import { planAll, buildMigrationContext } from "./migrate.mjs";
 
 const AGENT_BLOCK_MARKER = /<!--\s*projectstore:agents v(\d+)/g;
 // v3 adds the entry rule and the instruction-conflict clause. checkAgentsBlock
@@ -162,8 +172,10 @@ export function checkLayoutTemplates(cfg) {
   const lang = cfg.language || "en";
   // Layout-driven (PS-SPEC story-001): a command needs a template iff it maps
   // to a declared folder kind ("story" maps through the epic folder; "kanban"
-  // through the layout's kanban block). Folders WITHOUT a command (e.g.
-  // diagrams) require no template — no false findings for them.
+  // through the layout's kanban block). A folder WITHOUT a command requires no
+  // template — no false findings for it. The engineering layout no longer has
+  // such a folder: `diagrams`, the example this comment used to name, got its
+  // command and template in SPEC-PS-10. The branch stays for custom layouts.
   const kinds = (layout.commands || []).filter((k) => {
     if (k === "kanban") return Boolean(layout.kanban);
     if (k === "story") return Boolean(folderByKind(layout, "epic"));
@@ -179,6 +191,37 @@ export function checkLayoutTemplates(cfg) {
   if (!existsSync(join(pluginRoot(), "scaffold", "headings.json"))) {
     out.push(finding("install", "issue", "templates",
       "scaffold/headings.json is missing — heading-registry checks (index headers, acceptance, spec gates) cannot run. Stale/corrupt plugin install?"));
+  }
+  // SPEC-PS-10: without the layout's strings sidecar every folder purpose
+  // degrades to its bare kind — `adr` means "adr" — which is the tautology the
+  // sidecar exists to retire, and the degradation is otherwise invisible. An
+  // `issue`, like a missing template, because both mean a broken or stale
+  // install; contract 2's graceful degradation governs the RENDER (a folder
+  // README must stay creatable), not the report.
+  const layoutName = layout.name || cfg.layout;
+  const strings = loadLayoutStrings(layoutName);
+  const usable = (id) => resolveLayoutString(strings, id, lang) !== null;
+  if (Object.keys(strings).filter((k) => !k.startsWith("_")).length === 0) {
+    out.push(finding("install", "issue", "templates",
+      `scaffold/layouts/${layoutName}.strings.json is missing or empty — every folder's stated purpose falls back to its bare kind. Stale/corrupt plugin install?`));
+  } else {
+    // Every id the layout REFERENCES, not merely "the file has some key". A
+    // typo'd or stale id degrades exactly like a missing sidecar — the folder
+    // scaffolds with its bare kind — and checkFolderPurpose cannot see it,
+    // because its expected render resolves through the same fallback and
+    // therefore matches the wrong text it is comparing against.
+    const dead = [];
+    for (const folder of layout.folders) {
+      if (!folder.purpose) dead.push(`${folder.path}: no purpose declared`);
+      else if (!usable(folder.purpose)) dead.push(`${folder.path}.purpose → ${folder.purpose}`);
+      if (folder.not_this && !usable(folder.not_this)) {
+        dead.push(`${folder.path}.not_this → ${folder.not_this}`);
+      }
+    }
+    if (dead.length) {
+      out.push(finding("install", "issue", "templates",
+        `scaffold/layouts/${layoutName}.strings.json does not resolve every id the layout references (${dead.join("; ")}) — those folders scaffold with their bare kind, and the folder-purpose check cannot see it.`));
+    }
   }
   return out;
 }
@@ -723,6 +766,157 @@ export function checkIndexHeaders(cfg, layout) {
       out.push(finding("vault", "warn", "index-header",
         `${folder.path}/README.md index header "${lines[headIdx].trim()}" matches no registered form — reconcile cannot rebuild this index (standard form: | File | Title | Status | Date |, localized forms in scaffold/headings.json).`,
         `${folder.path}/README.md`));
+    }
+  }
+  return out;
+}
+
+// ─── Folder purpose & boundaries (SPEC-PS-10 contract 8) ───────────────
+//
+// Lints only the folder READMEs this plugin wrote; the marker is the consent.
+// A vault scaffolded before v0.25 carries model-written prose and no marker, so
+// it stays unmanaged and silent rather than permanently warned at with no repair
+// on offer — which is what a check that fires on a state it admits is legitimate
+// would be. Deleting the marker line is therefore the supported way to keep your
+// own wording, and the marker says so.
+//
+// BOTH halves are checked. Moving the boundary rule out of the preamble (so it
+// stops competing for the 160-character skeleton cell) also moved it out of
+// everything that looked at the preamble, which would have left the payload of
+// this whole change as the one part nothing guards.
+//
+// Matching accepts EVERY bundled locale's rendering, the same rule
+// headingLineRe follows: a ru-scaffolded vault inspected under an en binding is
+// correct, not drifted.
+
+// Body of the section introduced by `## <heading>`, up to the next `## `,
+// normalized the way folderPurpose normalizes prose so that a reflow, trailing
+// whitespace or a `|` cannot read as a divergence. null when absent.
+function sectionBodyOf(text, heading) {
+  const lines = String(text ?? "").split("\n");
+  const i = lines.findIndex((l) => l.trim() === `## ${heading}`);
+  if (i === -1) return null;
+  let end = i + 1;
+  while (end < lines.length && !/^## /.test(lines[end])) end++;
+  return lines.slice(i + 1, end).join(" ").replace(/\s+/g, " ").trim();
+}
+
+export function checkFolderPurpose(cfg, layout) {
+  const out = [];
+  const strings = loadLayoutStrings(layout.name || cfg.layout);
+  // Derived once, not once per folder: it is a readdir plus a stat per bundled
+  // locale, and unlike its two neighbours it carries no cache.
+  const locales = bundledLocales();
+  for (const folder of layout.folders) {
+    if (folder.readme !== true) continue;
+
+    const readmePath = join(cfg.vault_path, folder.path, "README.md");
+    if (!existsSync(readmePath)) continue; // a missing README is checkIndexes' business
+    let actual;
+    try { actual = readFileSync(readmePath, "utf8"); } catch { continue; }
+    // Only `managed`. A `mine` marker is the user saying the wording is theirs,
+    // and an absent marker is a vault nobody has brought forward yet — neither
+    // is drift, and neither is this check's business.
+    if (purposeMarkerState(actual) !== "managed") continue;
+
+    // Clean iff SOME bundled locale explains the file completely. Accumulating
+    // "purpose matched in de, boundary matched in fr" would call a genuinely
+    // mixed-up README clean, so the two must agree within one locale.
+    let purposeMatched = false;
+    let declaresBoundary = false;
+    let explained = false;
+    let judged = false;
+    for (const lang of locales) {
+      // A locale whose purpose id does not resolve would render the bare kind
+      // as its own expectation, so comparing a README against it proves
+      // nothing — and, before this skip existed, disagreed with every correctly
+      // scaffolded README and blamed the file for a fault in the install, while
+      // offering to delete the marker: a transient broken sidecar turned into
+      // permanent, irreversible unmanagement of a folder that was never wrong.
+      // An unresolvable id is checkLayoutTemplates' finding, and it shares this
+      // module's definition of "resolves" so the two cannot disagree about
+      // which shapes count.
+      if (!resolveLayoutString(strings, folder.purpose, lang)) continue;
+      let expected, heading, notThis;
+      try {
+        expected = renderFolderReadme(layout, folder, lang);
+        heading = loadStrings(lang).folder_not_this_heading;
+        notThis = folderStrings(layout, folder, lang).notThis;
+      } catch {
+        continue; // total per contract 8: one unreadable locale degrades itself only
+      }
+      if (notThis) declaresBoundary = true;
+      // `want == null` used to mean two different things, and conflating them
+      // opened a hole: "the layout declares no boundary for this folder" and
+      // "this locale's folder-readme template cannot render one". In the second
+      // case the locale cannot judge the boundary at all — yet it would report
+      // the file fully explained, so a deliberately deleted `## Not this` read
+      // as clean whenever ANY locale shared the folder's purpose text and had a
+      // template missing the placeholder. Aliased locale strings, which a team
+      // that did not translate its layout will have, make that ordinary.
+      const want = sectionBodyOf(expected, heading);
+      if (notThis && want == null) continue; // unusable locale, not a satisfied one
+      judged = true;
+      const samePurpose =
+        folderPurpose(actual, folder.kind) === folderPurpose(expected, folder.kind);
+      if (samePurpose) purposeMatched = true;
+      const sameBoundary = want == null || sectionBodyOf(actual, heading) === want;
+      if (samePurpose && sameBoundary) { explained = true; break; }
+    }
+    if (explained) continue;
+    // Not one locale rendered — templates/ is unreadable. Same reasoning as the
+    // sidecar guard above: report nothing rather than blame the README.
+    if (!judged) continue;
+
+    if (!purposeMatched) {
+      out.push(finding("vault", "warn", "folder-purpose",
+        `${folder.path}/README.md is marked as layout-managed but its preamble matches the layout's stated purpose in no bundled language — the folder's purpose has drifted from scaffold/layouts/${layout.name || cfg.layout}.json, and the drifted text is what SessionStart injects as this folder's purpose (to keep your own wording, change "managed" to "mine" on the projectstore:purpose line).`,
+        `${folder.path}/README.md`));
+    } else if (declaresBoundary) {
+      out.push(finding("vault", "warn", "folder-purpose",
+        `${folder.path}/README.md is marked as layout-managed but its boundary section does not match the layout's \`not_this\` text in any bundled language — the rule that says what does NOT belong in ${folder.path}/ was removed or rewritten (to keep your own wording, change "managed" to "mine" on the projectstore:purpose line).`,
+        `${folder.path}/README.md`));
+    }
+  }
+  return out;
+}
+
+// ─── Pending vault migrations (SPEC-PS-11 contract 14) ────────────────
+//
+// Reports; never repairs. `warn`, not `info`: runStartupChecks never runs vault
+// checks at all (ADR-005 Decision 4), so `info` would protect SessionStart's
+// counter from nothing — what it WOULD do is render the line under a group
+// header reading "0 issue(s), 0 warning(s)", which is how a mechanism for
+// updating existing vaults reaches nobody.
+//
+// Three target states, and only one of them is a warning. A `skipped` target —
+// a README whose table carries a hand-added column, say, which indexHeaderRe
+// deliberately refuses to match — has no fix available, so counting it would be
+// an unclearable nag; dropping it would leave a half-migrated vault with no
+// signal anywhere. It gets one `info` line and no count.
+export function checkMigrations(cfg, layout, vaultCfg = null) {
+  const out = [];
+  let report;
+  try {
+    report = planAll(buildMigrationContext(cfg, { layout, vaultCfg }));
+  } catch (e) {
+    return [finding("vault", "warn", "migrations",
+      `pending migrations could not be computed: ${e && e.message ? e.message : String(e)}`)];
+  }
+  for (const m of report) {
+    if (m.error) {
+      out.push(finding("vault", "warn", "migrations",
+        `migration "${m.id}" could not plan: ${m.error}`));
+      continue;
+    }
+    if (m.pending.length) {
+      out.push(finding("vault", "warn", "migrations",
+        `${m.pending.length} file(s) can be brought forward by migration "${m.id}" (${m.title}, since v${m.since}) — preview and apply with /projectstore:migrate.`));
+    }
+    const notDeclined = m.skipped.filter((sk) => sk.reason !== "declined");
+    if (notDeclined.length) {
+      out.push(finding("vault", "info", "migrations",
+        `migration "${m.id}" cannot act on ${notDeclined.map((sk) => `${sk.rel} (${sk.reason})`).join("; ")} — nothing to do about these; decline them with /projectstore:migrate to stop listing them.`));
     }
   }
   return out;
@@ -1439,11 +1633,16 @@ export function runVaultChecks(cfg) {
   // become a finding, never a crash that swallows the whole report.
   const guarded = [
     () => checkIndexHeaders(cfg, layout),
+    () => checkFolderPurpose(cfg, layout),
     () => checkStoriesAndEpics(artifacts),
     () => checkSpecLinks(cfg, layout, artifacts),
     () => checkSpecCoverage(artifacts, vaultCfg, layout),
     () => checkSpecAcceptance(layout, artifacts, vaultCfg),
     () => checkLifecycleGates(artifacts, vaultCfg),
+    // Last: the guarded loop `break`s on the first throw, and a migration's
+    // plan is the most failure-prone thing in it — third-party registry entries
+    // included. Nothing behind it should pay for that.
+    () => checkMigrations(cfg, layout, vaultCfg),
   ];
   for (const step of guarded) {
     try { findings.push(...step()); } catch (e) {

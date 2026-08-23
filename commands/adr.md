@@ -3,7 +3,14 @@ description: Create a new Architecture Decision Record (ADR) in the bound vault.
 argument-hint: <title>
 ---
 
-You are creating a new ADR.
+You are creating a new ADR — a decision: what was chosen, why, and what was
+rejected.
+
+Not this: the normative *how* that follows from the decision is a spec
+(`/projectstore:spec`), and the comparison that led to it is a research note
+(`/projectstore:research`) — an ADR cites that comparison, it does not contain
+it. If the user is still weighing options, offer research first and come back
+here when the choice is made.
 
 Steps:
 

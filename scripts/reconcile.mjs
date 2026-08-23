@@ -37,6 +37,7 @@ import {
   projectRoot,
   pluginRoot,
   indexHeaderRe,
+  findManagedIndex,
   slugIdentity,
   displayNumberOf,
   compareArtifactOrder,
@@ -170,16 +171,14 @@ function derivedTarget(script, explicit = false, fallbackPath = null) {
 // Returns {content} (possibly === original) or {unusable: reason} when the
 // README carries no managed table this script may touch.
 export function rebuildIndexRows(original, folder, artifacts) {
-  const lines = original.split("\n");
   // Header matched via the heading registry (PS-SPEC story-002) — ru vaults'
   // localized index headers were unreconcilable while this was an English
   // literal. Unrecognized headers surface as a doctor index-header finding.
-  const headerRe = indexHeaderRe();
-  const headIdx = lines.findIndex((l) => headerRe.test(l));
-  if (headIdx === -1) return { unusable: "no recognised index-table header" };
-  if (!/^\|[-\s|]+\|$/.test(lines[headIdx + 1] || "")) {
-    return { unusable: "malformed separator row under the index header" };
-  }
+  // The locator moved to lib.mjs so the migration runner cuts around exactly
+  // the region this function rewrites (SPEC-PS-11 contract 9).
+  const found = findManagedIndex(original);
+  if (found.unusable) return { unusable: found.unusable };
+  const { lines, headIdx } = found;
 
   let end = headIdx + 2;
   while (end < lines.length && /^\|/.test(lines[end])) end++;

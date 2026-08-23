@@ -84,5 +84,14 @@
       "Verification step exists and is testable.",
       "Rollback step exists for any irreversible action."
     ]
+  },
+  "diagram": {
+    "default_review": false,
+    "items": [
+      "Description states what the diagram shows AND the reading it is meant to support — not just a label.",
+      "The mermaid block parses and is not the template placeholder.",
+      "Related names at least one artifact this diagram serves; a diagram nothing links to will not be found.",
+      "No reasoning that belongs in the linked ADR / spec / research note has migrated into this file."
+    ]
   }
 }

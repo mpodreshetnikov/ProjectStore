@@ -11,6 +11,8 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import * as migrationsModule from "../scripts/migrations.mjs";
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const ENV = { ...process.env, CLAUDE_PROJECT_DIR: REPO, CLAUDE_PLUGIN_ROOT: REPO };
@@ -333,7 +335,8 @@ const IDX_HEAD = "| File | Title | Status | Date |\n|------|-------|--------|---
 
 function seedCreationFixture() {
   const { proj, vault } = makeVaultProject();
-  for (const path of ["adr", "specs", "epics", "research", "concepts", "meetings", "ops"]) {
+  for (const path of ["adr", "specs", "epics", "research", "concepts", "meetings",
+    "ops", "diagrams"]) {
     mkdirSync(join(vault, path), { recursive: true });
     writeFileSync(join(vault, path, "README.md"),
       `# ${path}\n\n## Index\n\n${IDX_HEAD}\nPROSE BELOW THE TABLE.\n`);
@@ -458,7 +461,8 @@ test("creation e2e: a localized index header reconciles (registry-driven, not an
 });
 
 test("creation command prose applies index rows through the core, under one disclosed gate (contracts 1, 2)", () => {
-  for (const file of ["adr.md", "spec.md", "epic.md", "research.md", "concept.md", "meeting.md", "runbook.md"]) {
+  for (const file of ["adr.md", "spec.md", "epic.md", "research.md", "concept.md",
+    "meeting.md", "runbook.md", "diagram.md"]) {
     // Prose wraps at ~80 columns, so match against a whitespace-flattened
     // copy — a guard that a reflow can silence guards nothing.
     const src = readFileSync(join(REPO, "commands", file), "utf8").replace(/\s+/g, " ");
@@ -668,6 +672,434 @@ test("command prose routes derived-view applies through reconcile --write (contr
   }
   // `codemap set` edits SOURCE frontmatter — contract 7 exempts it explicitly.
   assert.match(readFileSync(join(REPO, "commands", "codemap.md"), "utf8"), /Edit the frontmatter/);
+});
+
+test("scaffold prose renders folder READMEs through the core, never composing them (SPEC-PS-10)", () => {
+  // Prose wraps at ~80 columns, so match against a whitespace-flattened copy —
+  // a guard a reflow can silence guards nothing.
+  const src = readFileSync(join(REPO, "commands", "scaffold.md"), "utf8").replace(/\s+/g, " ");
+  assert.ok(src.includes("draft.mjs\" folder-readmes"),
+    "scaffold.md must render folder READMEs through draft.mjs, not compose them");
+  // The exact instruction this change exists to delete: the model inventing a
+  // folder's stated purpose, differently in every vault.
+  assert.doesNotMatch(src, /Substitute .{0,80}folder_description/,
+    "scaffold.md must not ask the model to substitute folder_description itself");
+  assert.doesNotMatch(src, /folder_description.{0,60}based on the folder kind/,
+    "scaffold.md must not derive the folder description from the kind");
+  assert.ok(/verbatim/.test(src),
+    "scaffold.md must say the rendered content is written verbatim");
+});
+
+test("every creation command states the kind it is NOT (SPEC-PS-10 boundaries)", () => {
+  // The rule has a localized home (the folder README's boundary section, from
+  // the layout sidecar) and this English-only one, read at write time. Same
+  // trade-off scaffold/checklists.json already documents. Structural, not a
+  // string match on the sentence: the clause must sit in the role paragraph,
+  // BEFORE the mechanical steps, where it is read before anything is drafted.
+  const SIBLINGS = {
+    "adr.md": ["spec", "research"],
+    "spec.md": ["adr", "runbook"],
+    "research.md": ["concept", "adr"],
+    "concept.md": ["research"],
+    "meeting.md": ["adr"],
+    "runbook.md": ["spec", "adr"],
+    "diagram.md": ["adr", "spec", "research"],
+  };
+  for (const [file, siblings] of Object.entries(SIBLINGS)) {
+    const raw = readFileSync(join(REPO, "commands", file), "utf8");
+    // Anchored on the first numbered step rather than a "Steps:" header —
+    // spec.md dispatches through "## Creation flow" and has no such header.
+    const steps = raw.search(/\n1\. /);
+    assert.notEqual(steps, -1, `${file}: no numbered step to anchor against`);
+    const role = raw.slice(0, steps).replace(/\s+/g, " ");
+    assert.match(role, /Not this:/,
+      `${file}: the role paragraph must say which kind this is NOT`);
+    for (const sib of siblings) {
+      assert.ok(role.includes(`/projectstore:${sib}`),
+        `${file}: the boundary clause must name /projectstore:${sib} as the alternative`);
+    }
+  }
+});
+
+// ─── SPEC-PS-11: bringing an existing vault forward ───────────────────
+//
+// A v0.24-shaped vault: model-written preambles, real index rows, and prose
+// below the table that a human owns. One folder carries a hand-added column,
+// which indexHeaderRe deliberately refuses to match (v0.22) — that is the
+// unmigratable-file case, and it has to stay a report rather than a nag.
+
+const OLD_TABLE = "| File | Title | Status | Date |\n|------|-------|--------|------|\n";
+
+function seedOldVault({ ruFolder = null } = {}) {
+  const { proj, vault } = makeVaultProject();
+  for (const f of ["adr", "specs", "epics", "research", "concepts", "meetings", "ops", "diagrams"]) {
+    mkdirSync(join(vault, f), { recursive: true });
+    const ru = f === ruFolder;
+    const head = ru ? "## Индекс" : "## Index";
+    const cols = ru
+      ? "| Файл | Заголовок | Статус | Дата |\n|------|-----------|--------|------|\n"
+      : f === "ops"
+        ? "| File | Title | Status | Date | Owner |\n|--|--|--|--|--|\n"
+        : OLD_TABLE;
+    const rows = f === "adr" ? "| [a](./a.md) | A | accepted | 2026-01-02 |\n" : "";
+    writeFileSync(join(vault, f, "README.md"),
+      `# ${f}\n\nModel-written prose for ${f}.\n\n${head}\n\n${cols}${rows}\n---\n\nMY OWN NOTES about ${f}.\n`);
+  }
+  return { proj, vault };
+}
+
+// A real digest, not a length tally: a same-length write would walk past a
+// helper named "hash", and this one guards the purity of the plan mode.
+const hashTree = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
+  .filter((d) => d.isFile())
+  .map((d) => {
+    const abs = join(d.parentPath || d.path, d.name);
+    return `${abs}:${createHash("sha256").update(readFileSync(abs)).digest("hex")}`;
+  })
+  .sort().join("|");
+
+test("migrate: the plan writes nothing, and names what it cannot act on", () => {
+  const { proj, vault } = seedOldVault();
+  const before = hashTree(vault);
+  const out = runIn(proj, "migrate.mjs", []);
+  assert.equal(hashTree(vault), before, "planning must not touch the vault");
+  assert.equal(out.write, false);
+  const m = out.migrations.find((x) => x.id === "folder-readme-purpose");
+  assert.equal(m.pending.length, 7, JSON.stringify(m.pending.map((p) => p.rel)));
+  assert.deepEqual(m.skipped.map((sk) => sk.rel), ["ops/README.md"]);
+  assert.match(m.skipped[0].reason, /no recognised index-table header/);
+});
+
+test("migrate --write: the preamble is replaced, the table and the prose below it are not", () => {
+  const { proj, vault } = seedOldVault();
+  const original = readFileSync(join(vault, "adr", "README.md"), "utf8");
+  const applied = runIn(proj, "migrate.mjs", ["--write"]);
+  assert.equal(applied.failed, false, JSON.stringify(applied));
+
+  const now = readFileSync(join(vault, "adr", "README.md"), "utf8");
+  // Byte-identical from the index heading down — the row and the human prose.
+  const cut = (t) => t.slice(t.indexOf("## Index"));
+  assert.equal(cut(now), cut(original), "everything from the index heading down must survive");
+  assert.match(now, /MY OWN NOTES about adr\./);
+  assert.match(now, /\[a\]\(\.\/a\.md\)/);
+  // …and the boundary section really is installed. Splicing at the first `## `
+  // instead of the index heading would silently drop it, since the rendered
+  // README's first `## ` is `## Not this`.
+  assert.match(now, /^## Not this$/m);
+  assert.match(now, /projectstore:purpose managed/);
+  assert.doesNotMatch(now, /Model-written prose for adr/);
+
+  // Idempotent, and the skipped file was left alone.
+  const second = runIn(proj, "migrate.mjs", ["--write"]);
+  assert.deepEqual(second.migrations[0].results, [], "a second run must plan nothing");
+  assert.match(readFileSync(join(vault, "ops", "README.md"), "utf8"), /Model-written prose for ops/);
+});
+
+test("migrate --write: the pre-image is archived, git-ignored, and equals the original", () => {
+  const { proj, vault } = seedOldVault();
+  const original = readFileSync(join(vault, "research", "README.md"), "utf8");
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const dir = join(vault, ".projectstore", "migrations", "folder-readme-purpose");
+  // Content-addressed: a second run must never clobber the pre-image the first
+  // one took, because that copy is the only remaining record of the wording
+  // being replaced.
+  const pre = readdirSync(dir).filter((n) => n.startsWith("research__README.md."));
+  assert.equal(pre.length, 1, `expected one pre-image, got ${JSON.stringify(readdirSync(dir))}`);
+  assert.equal(readFileSync(join(dir, pre[0]), "utf8"), original);
+  // The `*` ignore under .projectstore/ is otherwise written only when a
+  // SessionStart hook has fired, so pre-images would land in git without this.
+  assert.match(readFileSync(join(vault, ".projectstore", ".gitignore"), "utf8"), /^\*$/m);
+});
+
+test("migrate: the language comes from the README, not from the reader's config", () => {
+  // `## Index` is the form in de, en AND fr, so the heading alone does not
+  // identify a language — an unguarded lookup hands an English vault a German
+  // boundary section.
+  const { proj, vault } = seedOldVault({ ruFolder: "research" });
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /^## Not this$/m);
+  const ru = readFileSync(join(vault, "research", "README.md"), "utf8");
+  assert.match(ru, /^## Не сюда$/m);
+  assert.match(ru, /^## Индекс$/m, "the ru table heading must be untouched");
+});
+
+test("migrate --only and --decline narrow to one target", () => {
+  const { proj, vault } = seedOldVault();
+  runIn(proj, "migrate.mjs", ["--write", "--only", "folder-readme-purpose:adr/README.md"]);
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /projectstore:purpose managed/);
+  assert.match(readFileSync(join(vault, "specs", "README.md"), "utf8"), /Model-written prose for specs/);
+
+  // Declining writes the mark INTO the file. The vault travels with the repo, so
+  // a decline recorded only under a git-ignored directory is invisible to the
+  // teammate who clones it next and migrates the file away.
+  const declined = runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:specs/README.md"]);
+  assert.equal(declined.how, "mine-marker");
+  assert.match(readFileSync(join(vault, "specs", "README.md"), "utf8"), /projectstore:purpose mine/);
+  const out = runIn(proj, "migrate.mjs", []);
+  assert.ok(!out.migrations[0].pending.some((p) => p.rel === "specs/README.md"),
+    "a declined target is not offered again");
+
+  // And an unmatched target must die loudly rather than reporting success on
+  // changes the user approved and that silently did not happen.
+  const bad = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--write", "--only", "folder-readme-purpose:nope/README.md"],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  assert.notEqual(bad.status, 0, "an unmatched --only target must not exit 0");
+  assert.match(bad.stderr, /is not a target of/);
+});
+
+test("migrate: a `mine` marker is never a target", () => {
+  const { proj, vault } = seedOldVault();
+  const p = join(vault, "concepts", "README.md");
+  writeFileSync(p, readFileSync(p, "utf8")
+    .replace("Model-written prose", "<!-- projectstore:purpose mine -->\nMy own wording"));
+  const out = runIn(proj, "migrate.mjs", []);
+  assert.ok(!out.migrations[0].pending.some((x) => x.rel === "concepts/README.md"),
+    "a preamble whose owner claimed it must never be planned over");
+});
+
+test("migrate: concurrent edits do not conflict for a transform whose output ignores them", () => {
+  // I wrote this test expecting a rewritten preamble to conflict. It does not,
+  // and it should not: folder-readme-purpose REPLACES the preamble outright, so
+  // its output does not depend on the old one. What the user approved — "put
+  // the layout's text here" — still holds no matter who edited it meanwhile.
+  // The conflict machinery is exercised below with a transform that does depend
+  // on its input, which is the only shape that can be invalidated.
+  const { proj, vault } = seedOldVault();
+  const src = `
+    process.env.CLAUDE_PROJECT_DIR = ${JSON.stringify(proj)};
+    process.env.CLAUDE_PLUGIN_ROOT = ${JSON.stringify(REPO)};
+    const fs = await import("node:fs"), path = await import("node:path");
+    const mig = await import(${JSON.stringify(join(REPO, "scripts", "migrate.mjs"))});
+    const { readConfig } = await import(${JSON.stringify(join(REPO, "scripts", "lib.mjs"))});
+    const ctx = mig.buildMigrationContext(readConfig());
+    const plan = mig.planAll(ctx).find((m) => m.id === "folder-readme-purpose");
+    const pick = (rel) => plan.pending.find((e) => e.rel === rel);
+    const V = ${JSON.stringify(vault)};
+
+    // (a) a sibling session appends an index row — the v0.22 auto-regeneration,
+    // and the likeliest thing to happen between plan and write.
+    const row = path.join(V, "specs", "README.md");
+    fs.writeFileSync(row, fs.readFileSync(row, "utf8") + "| [x](./x.md) | X | draft | 2026-02-02 |\\n");
+    const below = mig.applyOne(ctx, "folder-readme-purpose", pick("specs/README.md"));
+
+    // (b) someone rewrites the preamble this migration is going to replace.
+    const own = path.join(V, "adr", "README.md");
+    fs.writeFileSync(own, fs.readFileSync(own, "utf8").replace("Model-written prose for adr.", "Rewritten."));
+    const owned = mig.applyOne(ctx, "folder-readme-purpose", pick("adr/README.md"));
+
+    // (c) the conflict machinery itself: a transform that DOES depend on its
+    // input, previewed against bytes that are no longer there.
+    const e = pick("epics/README.md");
+    const stale = { ...e, transform: (b) => b.replace("Model-written prose for epics.", "T:" + b.length) };
+    fs.writeFileSync(e.path, fs.readFileSync(e.path, "utf8") + "\\nlater edit\\n");
+    const conflicted = mig.applyOne(ctx, "folder-readme-purpose", stale);
+
+    process.stdout.write(JSON.stringify({ below, owned, conflicted }));
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const { below, owned, conflicted } = JSON.parse(r.stdout);
+
+  assert.equal(below.applied, true, `an appended index row must not block the migration: ${JSON.stringify(below)}`);
+  assert.match(readFileSync(join(vault, "specs", "README.md"), "utf8"), /\[x\]\(\.\/x\.md\)/,
+    "the other writer's row must be in the file that landed");
+
+  assert.equal(owned.applied, true, `a rewritten preamble is not a conflict for a transform that replaces it: ${JSON.stringify(owned)}`);
+  assert.doesNotMatch(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Rewritten\./);
+
+  assert.equal(conflicted.applied, false, JSON.stringify(conflicted));
+  assert.match(conflicted.conflict, /changed under us/);
+  assert.match(readFileSync(join(vault, "epics", "README.md"), "utf8"), /later edit/,
+    "a conflicted file must be left exactly as the other writer left it");
+});
+
+test("migrate: declining a file that already converged is the commonest case", () => {
+  // Declining is forward-looking. Requiring the target to be pending RIGHT NOW
+  // makes the main case — "this file is fine, keep my wording from here on" —
+  // impossible, which is what my first attempt at validating the selector did.
+  const { proj, vault } = seedOldVault();
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.deepEqual(runIn(proj, "migrate.mjs", []).migrations[0].pending, [], "sanity: converged");
+
+  const declined = runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:specs/README.md"]);
+  assert.equal(declined.how, "mine-marker");
+  const p = join(vault, "specs", "README.md");
+  writeFileSync(p, readFileSync(p, "utf8").replace(/^The normative how[^\n]*$/m, "MY WORDING."));
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.match(readFileSync(p, "utf8"), /MY WORDING\./,
+    "a declined file must survive every later migration, including the drift repair");
+
+  // …and a typo must still be loud, since a silently recorded decline leaves
+  // the user believing they opted out while the real file stays in play.
+  const bad = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--decline", "folder-readme-purpose:nope/README.md"],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /does not exist in the vault/);
+});
+
+test("migrate: --expect binds the write to the bytes the human approved", () => {
+  // The preview is printed by one process and the write happens in another, so
+  // the window between "here is what will change" and "yes" is invisible to the
+  // runner unless the caller carries the hash it showed. That window is the
+  // entire reason a gated command exists.
+  const { proj, vault } = seedOldVault();
+  const plan = runIn(proj, "migrate.mjs", []);
+  const target = plan.migrations[0].pending.find((e) => e.rel === "adr/README.md");
+  assert.ok(target.sha, "the plan must publish a hash for each target");
+
+  writeFileSync(join(vault, "adr", "README.md"), "# adr\n\nSomeone rewrote this while you were reading.\n\n## Index\n\n" + OLD_TABLE);
+  const r = spawnSync(process.execPath,
+    [join(REPO, "scripts", "migrate.mjs"), "--write", "--expect", `adr/README.md=${target.sha}`],
+    { encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: proj, CLAUDE_PLUGIN_ROOT: REPO } });
+  const out = JSON.parse(r.stdout);
+  const adr = out.migrations[0].results.find((x) => x.rel === "adr/README.md");
+  assert.equal(adr.applied, false);
+  assert.match(adr.conflict, /changed after the preview you approved/);
+  assert.notEqual(r.status, 0, "a conflict must exit nonzero");
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Someone rewrote this/,
+    "the other writer's content must survive untouched");
+});
+
+test("migrate: a `managed` README that drifted is repaired, not ignored", () => {
+  // Detection is convergence on layout state, not presence of the marker this
+  // migration itself plants. Detecting its own stamp would make the marker an
+  // applied-record in a comment's clothing — and would leave a drifted README
+  // permanently warned at by doctor with no repair path anywhere.
+  const { proj, vault } = seedOldVault();
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const p = join(vault, "specs", "README.md");
+  writeFileSync(p, readFileSync(p, "utf8")
+    .replace(/^The normative how[^\n]*$/m, "Someone retyped this by hand."));
+  assert.equal(runIn(proj, "doctor.mjs", ["--json"])
+    .filter((f) => f.check === "folder-purpose").length, 1, "sanity: doctor sees the drift");
+
+  const plan = runIn(proj, "migrate.mjs", []);
+  assert.ok(plan.migrations[0].pending.some((e) => e.rel === "specs/README.md"),
+    "the drifted file must be offered for repair");
+  runIn(proj, "migrate.mjs", ["--write"]);
+  assert.deepEqual(runIn(proj, "doctor.mjs", ["--json"]).filter((f) => f.check === "folder-purpose"), []);
+});
+
+test("registry: an unsupported change kind is a load-time error, not a per-run one", () => {
+  const { assertRegistryShape, SUPPORTED_KINDS } = migrationsModule;
+  assert.deepEqual(SUPPORTED_KINDS, ["modify"]);
+  assert.throws(() => assertRegistryShape([{ id: "x", since: "1.0.0", plan: () => [], kinds: ["create"] }]),
+    /unsupported change kind "create"/,
+    "an unsupported kind must fail the author once, not every user on every doctor run");
+  assert.doesNotThrow(() => assertRegistryShape());
+});
+
+test("nothing anywhere tells a user to DELETE the purpose marker", () => {
+  // Deleting it is indistinguishable from a vault nobody has migrated, so the
+  // instruction is a data-loss loop: migrate re-targets the file and replaces
+  // the very wording its owner kept. This guard exists because three places
+  // still said it after the marker gained its second state.
+  const roots = ["scripts", "commands", "docs"];
+  const files = roots.flatMap((r) => readdirSync(join(REPO, r), { recursive: true })
+    .map((n) => join(REPO, r, String(n)))
+    .filter((f) => /\.(mjs|md|json)$/.test(f)));
+  files.push(join(REPO, "README.md"));
+  for (const f of files) {
+    const src = readFileSync(f, "utf8").replace(/\s+/g, " ");
+    // The harmful shape is the INSTRUCTION — "delete … to keep your own
+    // wording" — not the word "delete" near the word "marker". A guard that
+    // cannot tell a prohibition from an instruction fires on the sentence
+    // warning against the thing, which is how a guard gets deleted instead of
+    // obeyed.
+    assert.doesNotMatch(src, /delet\w*[^.]{0,80}marker[^.]{0,60}to keep your own wording/i,
+      `${f} still instructs the user to delete the marker to keep their wording`);
+    assert.doesNotMatch(src, /delete this line to keep your own wording/i, f);
+  }
+});
+
+test("migrate: a throwing transform degrades its own target, not the run", () => {
+  // planAll guards `plan`; nothing guarded `transform`. An entry that threw at
+  // write time escaped runMigrate after siblings were already written and
+  // archived — the user got a stack trace and no report of what landed or where
+  // the pre-images went, which is precisely what the command promises to print.
+  const { proj, vault } = seedOldVault();
+  const src = `
+    process.env.CLAUDE_PROJECT_DIR = ${JSON.stringify(proj)};
+    process.env.CLAUDE_PLUGIN_ROOT = ${JSON.stringify(REPO)};
+    const mig = await import(${JSON.stringify(join(REPO, "scripts", "migrate.mjs"))});
+    const { readConfig } = await import(${JSON.stringify(join(REPO, "scripts", "lib.mjs"))});
+    const ctx = mig.buildMigrationContext(readConfig());
+    const plan = mig.planAll(ctx)[0];
+    const boom = { ...plan.pending.find((e) => e.rel === "adr/README.md"),
+                   transform: () => { throw new Error("boom"); } };
+    process.stdout.write(JSON.stringify(mig.applyOne(ctx, plan.id, boom)));
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8" });
+  assert.equal(r.status, 0, `the throw must not escape: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.applied, false);
+  assert.match(out.skipped || out.error, /transform threw: boom/);
+  assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Model-written prose for adr/,
+    "a target whose transform threw must be left untouched");
+});
+
+test("migrate: a failed archive aborts that file and lets its siblings through", () => {
+  // The pre-image is the undo. Replacing a file whose previous contents could
+  // not be archived would leave no way back at all, so that target aborts.
+  const { proj, vault } = seedOldVault();
+  const dir = join(vault, ".projectstore", "migrations", "folder-readme-purpose");
+  mkdirSync(join(dir, "adr__README.md.0123456789ab"), { recursive: true }); // a directory where the file goes
+  const r = runInRaw(proj, "migrate.mjs", ["--write"]);
+  const out = JSON.parse(r.stdout);
+  const results = out.migrations[0].results;
+  const adr = results.find((x) => x.rel === "adr/README.md");
+  // Either the archive collides (aborting adr) or it does not; what must hold
+  // is that no file is ever replaced without its pre-image, and siblings apply.
+  assert.ok(results.filter((x) => x.applied).length >= 6, JSON.stringify(results));
+  if (adr && adr.error) {
+    assert.match(adr.error, /pre-image not archived/);
+    assert.match(readFileSync(join(vault, "adr", "README.md"), "utf8"), /Model-written prose for adr/);
+    assert.notEqual(r.status, 0, "an error must exit nonzero");
+  }
+});
+
+test("migrate: reconcile finds nothing to do on a migrated vault, and `mine` round-trips", () => {
+  const { proj, vault } = seedOldVault();
+  // Drive the vault to reconcile's fixed point FIRST — the fixture carries an
+  // index row for an artifact that does not exist, and reconcile removing it is
+  // reconcile working, not the migration disturbing anything. Migrating from a
+  // point that is already fixed is the only way this asserts what it claims.
+  runIn(proj, "reconcile.mjs", ["--write"]);
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const rec = runIn(proj, "reconcile.mjs", ["--write"]);
+  assert.equal(rec.summary.failed, 0, JSON.stringify(rec.summary));
+  assert.deepEqual((rec.indexes || []).filter((i) => i.changed).map((i) => i.folder), [],
+    "the migration must leave the managed index at reconcile's fixed point");
+
+  // mine → managed makes the folder managed again, which is what makes the
+  // opt-out reversible rather than a one-way door.
+  runIn(proj, "migrate.mjs", ["--decline", "folder-readme-purpose:concepts/README.md"]);
+  const p = join(vault, "concepts", "README.md");
+  assert.match(readFileSync(p, "utf8"), /projectstore:purpose mine/);
+  writeFileSync(p, readFileSync(p, "utf8").replace("projectstore:purpose mine", "projectstore:purpose managed"));
+  assert.deepEqual(runIn(proj, "doctor.mjs", ["--json"]).filter((f) => f.check === "folder-purpose"), [],
+    "a re-managed folder that still matches the layout is clean, not drifted");
+});
+
+test("doctor: pending migrations warn, unmigratable ones inform, a migrated vault says nothing", () => {
+  const { proj, vault } = seedOldVault();
+  const before = runIn(proj, "doctor.mjs", ["--json"]).filter((f) => f.check === "migrations");
+  assert.equal(before.filter((f) => f.level === "warn").length, 1, JSON.stringify(before));
+  assert.match(before.find((f) => f.level === "warn").message, /7 file\(s\)/);
+  // The skipped one is reported once and never counted: it has no fix, so
+  // counting it would be a warning nobody can ever clear.
+  const info = before.filter((f) => f.level === "info");
+  assert.equal(info.length, 1);
+  assert.match(info[0].message, /ops\/README\.md/);
+
+  runIn(proj, "migrate.mjs", ["--write"]);
+  const after = runIn(proj, "doctor.mjs", ["--json"]);
+  assert.deepEqual(after.filter((f) => f.check === "migrations" && f.level === "warn"), []);
+  assert.deepEqual(after.filter((f) => f.check === "folder-purpose"), [],
+    "a migrated vault must read as clean to the drift check");
+  assert.ok(existsSync(join(vault, "adr", "README.md")));
 });
 
 test("diff-refs: no args => fallback true; --since returns file lists", () => {

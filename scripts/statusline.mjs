@@ -40,6 +40,7 @@ import {
   statusLineIsOurs,
   claudeHome,
   writeFileAtomic,
+  loadStrings,
 } from "./lib.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -54,26 +55,6 @@ process.stdout.on("error", () => process.exit(0));
 
 function readRawStdin() {
   try { return readFileSync(0, "utf8"); } catch { return ""; }
-}
-
-const FALLBACK_STRINGS = {
-  statusline_no_work: "No epic or story in this session yet",
-  statusline_state_error: "⚠ session state unreadable",
-};
-
-function loadStrings(lang) {
-  const read = (l) => {
-    try {
-      return JSON.parse(readFileSync(join(pluginRoot(), "templates", l, "strings.json"), "utf8"));
-    } catch {
-      return null;
-    }
-  };
-  return {
-    ...FALLBACK_STRINGS,
-    ...(read("en") || {}),
-    ...(lang && lang !== "en" ? read(lang) || {} : {}),
-  };
 }
 
 function pluginVersion() {

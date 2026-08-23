@@ -1,0 +1,139 @@
+{
+  "_description": "Layout-scoped, per-language strings for the engineering layout. Keyed id -> language -> text; the layout's folders[] entries reference these ids in their `purpose` and `not_this` fields (SPEC-PS-10 contracts 1-2). Deliberately a sidecar of the LAYOUT, not of templates/<lang>/strings.json: folder meaning is layout-specific, and a custom layout (docs/extending.md) must be able to ship its own strings without editing bundled per-locale files that the next plugin upgrade overwrites. Resolution is bound language -> en -> (for purpose only) the folder's kind; a missing id degrades, it never throws. `purpose` fills the README preamble and must stay well under PURPOSE_CELL (160) once whitespace-collapsed, because it becomes the folder's Purpose cell in the SessionStart skeleton. `not_this` fills the README's own `## Not this` section, below the preamble, and is therefore not competing for that cell.",
+
+  "folder_purpose_adr": {
+    "en": "Architectural decisions: what was chosen, why, and what the alternatives were.",
+    "ru": "Архитектурные решения: что выбрали, почему и какие были альтернативы.",
+    "es": "Decisiones de arquitectura: qué se eligió, por qué y cuáles eran las alternativas.",
+    "de": "Architekturentscheidungen: was gewählt wurde, warum, und welche Alternativen es gab.",
+    "fr": "Décisions d'architecture : ce qui a été choisi, pourquoi, et quelles étaient les alternatives.",
+    "zh": "架构决策：选择了什么、为什么这样选，以及有哪些备选方案。"
+  },
+  "folder_not_this_adr": {
+    "en": "A decision, not its specification: once the choice is made, the normative how belongs in `specs/`. The comparison that led here belongs in `research/` — an ADR cites it, it does not contain it.",
+    "ru": "Решение, а не его спецификация: как только выбор сделан, нормативное «как» уезжает в `specs/`. Сравнение, которое к нему привело, живёт в `research/` — ADR на него ссылается, но не вмещает его.",
+    "es": "Una decisión, no su especificación: una vez tomada, el cómo normativo vive en `specs/`. La comparación que llevó hasta aquí vive en `research/` — un ADR la cita, no la contiene.",
+    "de": "Eine Entscheidung, nicht ihre Spezifikation: sobald die Wahl getroffen ist, gehört das normative Wie nach `specs/`. Der Vergleich, der hierher führte, gehört nach `research/` — ein ADR zitiert ihn, er steht nicht darin.",
+    "fr": "Une décision, pas sa spécification : une fois le choix fait, le comment normatif va dans `specs/`. La comparaison qui y a mené va dans `research/` — un ADR la cite, il ne la contient pas.",
+    "zh": "这里放决策，不放决策的规格：选定之后，规范性的「怎么做」属于 `specs/`。导向这个决策的对比属于 `research/` —— ADR 引用它，而不是收纳它。"
+  },
+
+  "folder_purpose_spec": {
+    "en": "The normative how of a subsystem — numbered behavioral contracts, plus acceptance that is additive to the stories it covers.",
+    "ru": "Нормативное «как» подсистемы — пронумерованные контракты поведения и приёмка, аддитивная к покрываемым историям.",
+    "es": "El cómo normativo de un subsistema — contratos de comportamiento numerados y una aceptación aditiva a las historias que cubre.",
+    "de": "Das normative Wie eines Subsystems — nummerierte Verhaltensverträge und eine Abnahme, die zu den abgedeckten Stories hinzukommt.",
+    "fr": "Le comment normatif d'un sous-système — des contrats de comportement numérotés et une acceptation additive aux stories couvertes.",
+    "zh": "子系统的规范性「怎么做」——编号的行为契约，以及对所覆盖 story 而言是叠加的验收条件。"
+  },
+  "folder_not_this_spec": {
+    "en": "The design contract, not the reason for it — why this approach won belongs in `adr/`. And not an operational procedure: something you run against a live system is a runbook in `ops/`.",
+    "ru": "Проектный контракт, а не обоснование — почему выбрали именно этот подход, пишется в `adr/`. И не операционная процедура: то, что запускают на живой системе, — это runbook в `ops/`.",
+    "es": "El contrato de diseño, no su motivo — por qué ganó este enfoque vive en `adr/`. Y no es un procedimiento operativo: lo que se ejecuta contra un sistema vivo es un runbook en `ops/`.",
+    "de": "Der Entwurfsvertrag, nicht seine Begründung — warum dieser Ansatz gewann, gehört nach `adr/`. Und keine Betriebsanweisung: was gegen ein laufendes System ausgeführt wird, ist ein Runbook in `ops/`.",
+    "fr": "Le contrat de conception, pas sa justification — pourquoi cette approche l'a emporté va dans `adr/`. Et pas une procédure d'exploitation : ce qui s'exécute sur un système vivant est un runbook dans `ops/`.",
+    "zh": "这里放设计契约，不放选择理由——为什么是这个方案属于 `adr/`。也不放操作步骤：对线上系统执行的东西是 `ops/` 里的 runbook。"
+  },
+
+  "folder_purpose_epic": {
+    "en": "Work too large for one sitting, decomposed into stories that live in each epic's own folder.",
+    "ru": "Работа, которая не помещается в один заход, разложенная на истории внутри собственной папки эпика.",
+    "es": "Trabajo demasiado grande para una sola sesión, descompuesto en historias dentro de la carpeta de cada épica.",
+    "de": "Arbeit, die für eine Sitzung zu groß ist, zerlegt in Stories im eigenen Ordner des Epics.",
+    "fr": "Un travail trop grand pour une seule session, décomposé en stories dans le dossier propre à chaque epic.",
+    "zh": "一次做不完的工作，拆成 story，放在各自 epic 自己的目录里。"
+  },
+  "folder_not_this_epic": {
+    "en": "A unit of work that fits in one session is a story inside an epic, not an epic of its own — add it to `stories/` under the epic it serves.",
+    "ru": "Работа, которая помещается в одну сессию, — это история внутри эпика, а не отдельный эпик: добавьте её в `stories/` того эпика, которому она служит.",
+    "es": "Una unidad de trabajo que cabe en una sesión es una historia dentro de una épica, no una épica propia — añádela a `stories/` bajo la épica a la que sirve.",
+    "de": "Eine Arbeitseinheit, die in eine Sitzung passt, ist eine Story innerhalb eines Epics, kein eigenes Epic — lege sie unter `stories/` des zugehörigen Epics ab.",
+    "fr": "Une unité de travail qui tient en une session est une story dans un epic, pas un epic à part — ajoutez-la dans `stories/` de l'epic qu'elle sert.",
+    "zh": "一次会话就能做完的工作是 epic 里的一个 story，而不是独立的 epic —— 把它加到对应 epic 的 `stories/` 下。"
+  },
+
+  "folder_purpose_research": {
+    "en": "Investigations that answer a sharp question: comparisons, benchmarks, spikes.",
+    "ru": "Исследования, отвечающие на точно поставленный вопрос: сравнения, замеры, спайки.",
+    "es": "Investigaciones que responden a una pregunta afilada: comparaciones, benchmarks, spikes.",
+    "de": "Untersuchungen, die eine scharf gestellte Frage beantworten: Vergleiche, Benchmarks, Spikes.",
+    "fr": "Des investigations qui répondent à une question précise : comparaisons, benchmarks, spikes.",
+    "zh": "回答一个明确问题的调研：对比、基准测试、技术验证。"
+  },
+  "folder_not_this_research": {
+    "en": "An investigation, not a definition: if the output is the meaning of a term, it is a concept in `concepts/`. And research never records a choice — when the comparison settles into a decision, raise an ADR in `adr/` and link back here.",
+    "ru": "Исследование, а не определение: если на выходе значение термина, это концепт в `concepts/`. И ресёрч никогда не фиксирует выбор — когда сравнение сходится в решение, заводите ADR в `adr/` и ссылайтесь отсюда.",
+    "es": "Una investigación, no una definición: si el resultado es el significado de un término, es un concepto en `concepts/`. Y la investigación nunca registra una elección — cuando la comparación decanta en una decisión, levanta un ADR en `adr/` y enlázalo desde aquí.",
+    "de": "Eine Untersuchung, keine Definition: ist das Ergebnis die Bedeutung eines Begriffs, gehört es als Concept nach `concepts/`. Und Research hält nie eine Wahl fest — wird aus dem Vergleich eine Entscheidung, lege ein ADR in `adr/` an und verlinke von hier.",
+    "fr": "Une investigation, pas une définition : si le résultat est le sens d'un terme, c'est un concept dans `concepts/`. Et la recherche n'enregistre jamais un choix — quand la comparaison aboutit à une décision, ouvrez un ADR dans `adr/` et faites le lien depuis ici.",
+    "zh": "这里做调研，不下定义：如果产出是某个术语的含义，那是 `concepts/` 里的概念。调研也从不记录选择——当对比收敛成决策时，去 `adr/` 立一个 ADR，并从这里链过去。"
+  },
+
+  "folder_purpose_concept": {
+    "en": "Terms this project uses in a specific sense — definitions, mental models, the shared glossary.",
+    "ru": "Термины, которые проект использует в своём особом смысле, — определения, ментальные модели, общий глоссарий.",
+    "es": "Términos que este proyecto usa en un sentido propio — definiciones, modelos mentales, el glosario común.",
+    "de": "Begriffe, die dieses Projekt in einem bestimmten Sinn verwendet — Definitionen, mentale Modelle, das gemeinsame Glossar.",
+    "fr": "Les termes que ce projet emploie dans un sens précis — définitions, modèles mentaux, le glossaire commun.",
+    "zh": "本项目在特定含义上使用的术语——定义、心智模型、共用词汇表。"
+  },
+  "folder_not_this_concept": {
+    "en": "A definition, not a comparison: weighing options against each other is research in `research/`. A concept says what one term means, in the sense this project uses it.",
+    "ru": "Определение, а не сравнение: взвешивание вариантов друг против друга — это ресёрч в `research/`. Концепт говорит, что значит один термин в том смысле, в котором его использует проект.",
+    "es": "Una definición, no una comparación: sopesar opciones entre sí es investigación en `research/`. Un concepto dice qué significa un término, en el sentido en que este proyecto lo usa.",
+    "de": "Eine Definition, kein Vergleich: Optionen gegeneinander abzuwägen ist Research in `research/`. Ein Concept sagt, was EIN Begriff bedeutet — in dem Sinn, in dem dieses Projekt ihn verwendet.",
+    "fr": "Une définition, pas une comparaison : peser des options les unes contre les autres, c'est de la recherche dans `research/`. Un concept dit ce que signifie un terme, au sens où ce projet l'emploie.",
+    "zh": "这里下定义，不做比较：把多个选项互相权衡是 `research/` 里的调研。概念说的是某一个术语在本项目语境下的含义。"
+  },
+
+  "folder_purpose_meeting": {
+    "en": "What was said and agreed on a given date: attendees, decisions, action items.",
+    "ru": "Что было сказано и о чём договорились в конкретную дату: участники, решения, задачи.",
+    "es": "Lo que se dijo y se acordó en una fecha concreta: asistentes, decisiones, acciones.",
+    "de": "Was an einem bestimmten Datum gesagt und vereinbart wurde: Teilnehmer, Entscheidungen, Aufgaben.",
+    "fr": "Ce qui a été dit et convenu à une date donnée : participants, décisions, actions.",
+    "zh": "某一天说了什么、议定了什么：参会者、决定、待办事项。"
+  },
+  "folder_not_this_meeting": {
+    "en": "A record of the conversation, not of the decision. A decision taken in a meeting is not decided until it exists as an ADR in `adr/` — this note links to it, it does not replace it.",
+    "ru": "Запись разговора, а не решения. Решение, принятое на встрече, не считается принятым, пока не станет ADR в `adr/`, — эта заметка ссылается на него, но не заменяет его.",
+    "es": "Un registro de la conversación, no de la decisión. Una decisión tomada en una reunión no está decidida hasta existir como ADR en `adr/` — esta nota enlaza con él, no lo sustituye.",
+    "de": "Ein Protokoll des Gesprächs, nicht der Entscheidung. Eine im Meeting getroffene Entscheidung ist erst entschieden, wenn sie als ADR in `adr/` existiert — diese Notiz verlinkt darauf, sie ersetzt es nicht.",
+    "fr": "Un compte rendu de la conversation, pas de la décision. Une décision prise en réunion n'est pas décidée tant qu'elle n'existe pas comme ADR dans `adr/` — cette note y renvoie, elle ne le remplace pas.",
+    "zh": "记录的是对话，不是决策。会上做出的决定，在 `adr/` 里成为 ADR 之前都不算定下来——这份记录链接到它，而不是取代它。"
+  },
+
+  "folder_purpose_runbook": {
+    "en": "Operational procedures to run against a live system, each with verification and rollback.",
+    "ru": "Операционные процедуры, которые выполняют на живой системе, — каждая с проверкой и откатом.",
+    "es": "Procedimientos operativos para ejecutar contra un sistema vivo, cada uno con verificación y rollback.",
+    "de": "Betriebsabläufe, die gegen ein laufendes System ausgeführt werden — jeder mit Verifikation und Rollback.",
+    "fr": "Des procédures d'exploitation à exécuter sur un système vivant, chacune avec vérification et rollback.",
+    "zh": "对线上系统执行的操作流程，每一份都带验证步骤和回滚步骤。"
+  },
+  "folder_not_this_runbook": {
+    "en": "Operational, not architectural: how the system must behave is a spec in `specs/`, and why it behaves that way is an ADR in `adr/`. A runbook is what you execute when something needs doing or fixing.",
+    "ru": "Операционное, а не архитектурное: как система обязана себя вести — это спека в `specs/`, а почему именно так — ADR в `adr/`. Runbook — это то, что выполняют, когда нужно что-то сделать или починить.",
+    "es": "Operativo, no arquitectónico: cómo debe comportarse el sistema es una spec en `specs/`, y por qué se comporta así es un ADR en `adr/`. Un runbook es lo que ejecutas cuando hay algo que hacer o arreglar.",
+    "de": "Betrieblich, nicht architektonisch: wie sich das System verhalten muss, ist eine Spec in `specs/`, und warum es das tut, ein ADR in `adr/`. Ein Runbook ist das, was man ausführt, wenn etwas zu tun oder zu reparieren ist.",
+    "fr": "Opérationnel, pas architectural : comment le système doit se comporter est une spec dans `specs/`, et pourquoi il se comporte ainsi est un ADR dans `adr/`. Un runbook, c'est ce qu'on exécute quand il y a quelque chose à faire ou à réparer.",
+    "zh": "这里是运维，不是架构：系统必须如何表现是 `specs/` 里的 spec，为什么这样表现是 `adr/` 里的 ADR。runbook 是需要动手做或修的时候拿来执行的东西。"
+  },
+
+  "folder_purpose_diagram": {
+    "en": "Diagrams kept as source — a Mermaid figure plus the reading it is meant to support.",
+    "ru": "Диаграммы как исходник — фигура на Mermaid и то прочтение, которое она должна поддержать.",
+    "es": "Diagramas conservados como fuente — una figura Mermaid más la lectura que pretende sostener.",
+    "de": "Diagramme als Quelltext — eine Mermaid-Figur samt der Lesart, die sie stützen soll.",
+    "fr": "Des diagrammes conservés comme source — une figure Mermaid et la lecture qu'elle doit soutenir.",
+    "zh": "以源码形式保存的图——一段 Mermaid 图形，加上它要支撑的那个读法。"
+  },
+  "folder_not_this_diagram": {
+    "en": "The picture, not the argument. The prose that reasons from a diagram belongs with the artifact that reasons — an ADR, a spec, a research note — which links to the diagram kept here.",
+    "ru": "Картинка, а не рассуждение. Текст, который рассуждает по диаграмме, живёт вместе с тем артефактом, который рассуждает, — ADR, спекой, ресёрчем, — а тот ссылается на диаграмму отсюда.",
+    "es": "La imagen, no el argumento. La prosa que razona a partir de un diagrama vive con el artefacto que razona — un ADR, una spec, una nota de investigación — y ese enlaza con el diagrama guardado aquí.",
+    "de": "Das Bild, nicht die Argumentation. Der Text, der aus einem Diagramm argumentiert, gehört zu dem Artefakt, das argumentiert — ein ADR, eine Spec, eine Research-Notiz — und dieses verlinkt auf das hier abgelegte Diagramm.",
+    "fr": "L'image, pas le raisonnement. La prose qui raisonne à partir d'un diagramme vit avec l'artefact qui raisonne — un ADR, une spec, une note de recherche — et celui-ci renvoie au diagramme conservé ici.",
+    "zh": "这里放图本身，不放据图展开的论证。基于图展开推理的文字，属于那个做推理的制品——ADR、spec 或调研笔记——由它链接到这里保存的图。"
+  }
+}

@@ -3,7 +3,13 @@ description: Create a new meeting note (date-prefixed filename).
 argument-hint: <title>
 ---
 
-You are creating a meeting note. Today's date is auto-prefixed.
+You are creating a meeting note — what was said and agreed on a date. Today's
+date is auto-prefixed.
+
+Not this: a decision taken in a meeting is not decided until it exists as an ADR
+(`/projectstore:adr`). This note links to it; it never stands in for it. If the
+conversation settled something, offer the ADR in step 8 rather than letting
+`meetings/` become the place decisions go to be forgotten.
 
 Steps:
 

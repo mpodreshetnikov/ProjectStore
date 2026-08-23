@@ -3,7 +3,12 @@ description: Create a new ops runbook (step-by-step how-to with verification & r
 argument-hint: <title>
 ---
 
-You are creating an ops runbook.
+You are creating an ops runbook — a procedure you execute against a live
+system, with verification and rollback.
+
+Not this: how the system must *behave* is a spec (`/projectstore:spec`), and why
+it behaves that way is an ADR (`/projectstore:adr`). A runbook is operational,
+not architectural.
 
 Steps:
 
